@@ -1,5 +1,4 @@
 # Hyperliquid Exchange Service
-# Аналог lighter app.py — Flask REST API поверх hyperliquid-python-sdk
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -662,28 +661,85 @@ def close_position():
 
         logger.info(f"Closing {current_side} {size_round} {symbol}, entry={entry_px:.4f}")
 
-        result     = exchange_client.market_close(symbol, size_round, None, slippage)
-        status_val = result.get("status", "")
-
-        if status_val == "ok":
+        # ✅ FIX: helper — проверяем фактический размер позиции
+        def _current_position_size():
             try:
-                filled     = result["response"]["data"]["statuses"][0].get("filled", {})
+                st = info_client.user_state(wallet_address)
+                for pp in st.get("assetPositions", []):
+                    p_pos = pp.get("position", {})
+                    if p_pos.get("coin", "").upper() == symbol:
+                        return abs(float(p_pos.get("szi", 0) or 0))
+                return 0.0
+            except Exception as ex:
+                logger.warning(f"_current_position_size error: {ex}")
+                return -1.0
+
+        # ✅ FIX: confirm-loop (poll 0.5s × 15s) вместо single sleep(2)
+        def _wait_closed(timeout=15.0, poll=0.5):
+            elapsed = 0.0
+            last = size_round
+            while elapsed < timeout:
+                time.sleep(poll)
+                elapsed += poll
+                cur = _current_position_size()
+                if cur < 0:
+                    continue
+                last = cur
+                if cur <= 0:
+                    return True, 0.0
+            return False, last
+
+        max_attempts = 3
+        last_result = None
+        any_order_id = ""
+        last_exit_price = 0.0
+        remaining = size_round
+
+        for attempt in range(1, max_attempts + 1):
+            if remaining <= 0:
+                break
+
+            # Попытка close
+            try:
+                result = exchange_client.market_close(symbol, remaining, None, slippage)
+                last_result = result
+            except Exception as call_err:
+                logger.error(f"   [a{attempt}] market_close exception: {call_err}", exc_info=True)
+                time.sleep(0.5)
+                continue
+
+            status_val = result.get("status", "")
+            if status_val != "ok":
+                logger.warning(f"   [a{attempt}] market_close status={status_val}, result={result}")
+                # Может позиция уже закрыта
+                cur = _current_position_size()
+                if cur == 0:
+                    logger.info(f"   [a{attempt}] Position already closed")
+                    remaining = 0
+                    break
+                if cur > 0:
+                    remaining = round_size(cur, sz_dec)
+                time.sleep(0.5)
+                continue
+
+            # status == ok
+            try:
+                filled = result["response"]["data"]["statuses"][0].get("filled", {})
                 exit_price = float(filled.get("avgPx", 0) or 0)
-                order_id   = str(filled.get("oid", ""))
+                order_id = str(filled.get("oid", ""))
+                if order_id:
+                    any_order_id = order_id
+                if exit_price > 0:
+                    last_exit_price = exit_price
             except (KeyError, IndexError, TypeError):
                 exit_price = 0.0
-                order_id   = ""
+                order_id = ""
 
-            time.sleep(2)
-            state2     = info_client.user_state(wallet_address)
-            positions2 = state2.get("assetPositions", [])
-            still_open = any(
-                p["position"]["coin"].upper() == symbol and abs(float(p["position"]["szi"])) > 0
-                for p in positions2
-            )
+            logger.info(f"   [a{attempt}] close submitted, oid={order_id}")
 
-            if not still_open:
-                logger.info(f"Position {symbol} confirmed closed, entry={entry_px:.4f}, exit={exit_price:.4f}, oid={order_id}")
+            closed, last_size = _wait_closed(timeout=15.0, poll=0.5)
+            if closed:
+                logger.info(f"Position {symbol} confirmed CLOSED, entry={entry_px:.4f}, exit={last_exit_price:.4f}")
                 return jsonify(
                     status="success",
                     message="Position closed successfully",
@@ -691,21 +747,42 @@ def close_position():
                     size=str(size_round),
                     side="SELL" if current_side == "LONG" else "BUY",
                     entry_price=str(entry_px),
-                    exit_price=str(exit_price),
-                    order_id=order_id,
+                    exit_price=str(last_exit_price),
+                    order_id=any_order_id,
                     raw=result,
                 ), 200
-            else:
-                return jsonify(
-                    status="submitted",
-                    message="Close order submitted but position may still be open",
-                    market=symbol,
-                    exit_price=str(exit_price),
-                    order_id=order_id,
-                    raw=result,
-                ), 200
-        else:
-            return jsonify(status="ERROR", message=str(result)), 500
+
+            logger.warning(f"   [a{attempt}] still open: {last_size}, will retry")
+            remaining = round_size(last_size, sz_dec) if last_size > 0 else remaining
+
+        # Финальная проверка
+        final = _current_position_size()
+        if final == 0:
+            logger.info(f"Position {symbol} confirmed CLOSED (final check)")
+            return jsonify(
+                status="success",
+                message="Position closed successfully",
+                market=symbol,
+                size=str(size_round),
+                side="SELL" if current_side == "LONG" else "BUY",
+                entry_price=str(entry_px),
+                exit_price=str(last_exit_price),
+                order_id=any_order_id,
+                raw=last_result,
+            ), 200
+
+        # Частичное или неудачное закрытие
+        logger.error(f"Position {symbol} not fully closed after {max_attempts} attempts. Remaining: {final}")
+        return jsonify(
+            status="PARTIAL" if any_order_id else "submitted",
+            message=f"Close order submitted but position may still be open. Remaining: {final}",
+            market=symbol,
+            size=str(size_round),
+            remaining_size=str(final),
+            exit_price=str(last_exit_price),
+            order_id=any_order_id,
+            raw=last_result,
+        ), 200
 
     except Exception as e:
         logger.error(f"Close position error: {e}", exc_info=True)

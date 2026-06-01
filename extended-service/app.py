@@ -20,9 +20,10 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-logging.getLogger("aiohttp").setLevel(logging.DEBUG)
-logging.getLogger("aiohttp.client").setLevel(logging.DEBUG)
-logging.getLogger("x10.utils.http").setLevel(logging.DEBUG)
+# ✅ FIX: убрали DEBUG для aiohttp — раньше спамило логи и тормозило прод.
+logging.getLogger("aiohttp").setLevel(logging.WARNING)
+logging.getLogger("aiohttp.client").setLevel(logging.WARNING)
+logging.getLogger("x10.utils.http").setLevel(logging.WARNING)
 
 app = Flask(__name__)
 CORS(app)
@@ -57,15 +58,17 @@ def _submit(coro, timeout_sec: int | None):
         raise
 
 # ---- aiohttp trace ----
+# ✅ FIX: trace логирует только медленные / ошибочные запросы (раньше — каждый запрос INFO)
+_SLOW_REQUEST_THRESHOLD = 1.5  # сек
+
 async def on_request_start(session, trace_config_ctx, params):
     trace_config_ctx._t0 = time.monotonic()
-    logger.info("AIOHTTP -> %s %s", params.method, params.url)
 
 async def on_request_end(session, trace_config_ctx, params):
     dt = time.monotonic() - getattr(trace_config_ctx, '_t0', 0)
     status = getattr(params.response, 'status', None) if hasattr(params, 'response') else None
-    cl = params.response.headers.get('Content-Length') if hasattr(params, 'response') else 'unknown'
-    logger.info("AIOHTTP <- %s %s status=%s dt=%.2fs Content-Length=%s", params.method, params.url, status, dt, cl)
+    if dt > _SLOW_REQUEST_THRESHOLD or (status and status >= 400):
+        logger.warning("AIOHTTP slow/err %s %s status=%s dt=%.2fs", params.method, params.url, status, dt)
 
 async def on_request_exception(session, trace_config_ctx, params):
     logger.error("AIOHTTP EXCEPTION %s %s exc=%r", params.method, params.url, params.exception)
@@ -98,7 +101,32 @@ ORDER_FUTURES: dict[str, object] = {}
 
 # ---- market cache ----
 _MARKET_CACHE: dict[str, dict] = {}
-_MARKET_CACHE_TTL_SEC = int(os.getenv("MARKET_CACHE_TTL_SEC", "30"))
+# ✅ FIX: TTL цен 30 → 5 сек (перед close раньше попадалась устаревшая цена)
+_MARKET_CACHE_TTL_SEC = int(os.getenv("MARKET_CACHE_TTL_SEC", "5"))
+
+# ✅ FIX: persistent aiohttp session с пулом (раньше новый ClientSession на каждый запрос → TLS handshake каждый раз)
+_HTTP_SESSION = None
+_SDK_LAST_FAIL_TS: float = 0.0
+_SDK_REINIT_LOCK = asyncio.Lock()
+
+async def _get_http_session():
+    global _HTTP_SESSION
+    if _HTTP_SESSION is None or _HTTP_SESSION.closed:
+        connector = aiohttp.TCPConnector(
+            limit=50,
+            limit_per_host=20,
+            ttl_dns_cache=300,
+            enable_cleanup_closed=True,
+        )
+        timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_read=20)
+        _HTTP_SESSION = _original_client_session(
+            connector=connector,
+            timeout=timeout,
+            headers={"User-Agent": "X10Bot/1.0"},
+            trace_configs=[TRACE_CONFIG],
+        )
+        logger.info("HTTP: persistent ClientSession created (pool=50)")
+    return _HTTP_SESSION
 
 async def safe_json(text: str):
     if not text or not text.strip():
@@ -107,6 +135,23 @@ async def safe_json(text: str):
         return json.loads(text)
     except json.JSONDecodeError:
         return {"error": "invalid_json", "raw_text": text[:500]}
+
+async def _reinit_sdk_if_needed():
+    """✅ FIX: авто-reinit BlockingTradingClient. Раньше при потере сессии SDK
+    оставался битым до рестарта процесса."""
+    global account, blocking_client, _SDK_LAST_FAIL_TS
+    async with _SDK_REINIT_LOCK:
+        if blocking_client is not None:
+            return
+        try:
+            logger.warning("SDK reinit: starting...")
+            account, blocking_client = await _init_clients()
+            _SDK_LAST_FAIL_TS = 0.0
+            logger.info("SDK reinit: success")
+        except Exception:
+            logger.exception("SDK reinit: failed")
+            _SDK_LAST_FAIL_TS = time.time()
+            raise
 
 async def _init_clients():
     if not (API_KEY and PUBLIC_KEY and PRIVATE_KEY and VAULT_ID):
@@ -143,42 +188,54 @@ logger.info("✅ SDK ready (vault=%s)", VAULT_ID)
 async def place_with_retry(client, **kwargs):
     return await client.create_and_place_order(**kwargs)
 
+# ✅ FIX: все HTTP вызовы через persistent session и с idempotent helper
 async def _extended_get(path: str, params: dict = None):
     url = f"{EXTENDED_HTTP_BASE}{path}"
     headers = {"X-Api-Key": API_KEY, "User-Agent": "X10Bot/1.0"}
-    logger.info("EXTENDED GET: %s params=%s", url, params or {})
+    logger.debug("EXTENDED GET: %s params=%s", url, params or {})
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers, params=params or {}) as resp:
-            text = await resp.text()
-            logger.info("EXTENDED RAW: status=%s content-type=%s body_len=%d body=[%s]",
-                       resp.status, resp.headers.get('content-type'), len(text), text[:300])
-            data = await safe_json(text)
-            return resp.status, data
+    session = await _get_http_session()
+    extra = {"proxy": HTTP_PROXY} if HTTP_PROXY else {}
+    async with session.get(url, headers=headers, params=params or {}, **extra) as resp:
+        text = await resp.text()
+        if resp.status >= 400:
+            logger.warning("EXTENDED GET %s: status=%s body=%s", path, resp.status, text[:300])
+        data = await safe_json(text)
+        return resp.status, data
 
 async def _extended_delete(path: str, params: dict = None):
     url = f"{EXTENDED_HTTP_BASE}{path}"
     headers = {"X-Api-Key": API_KEY, "User-Agent": "X10Bot/1.0"}
-    logger.info("EXTENDED DELETE: %s params=%s", url, params or {})
+    logger.debug("EXTENDED DELETE: %s params=%s", url, params or {})
 
-    async with aiohttp.ClientSession() as session:
-        async with session.delete(url, headers=headers, params=params or {}) as resp:
-            text = await resp.text()
-            logger.info("EXTENDED RAW DELETE: status=%s body=[%s]", resp.status, text[:300])
-            data = await safe_json(text)
-            return resp.status, data
+    session = await _get_http_session()
+    extra = {"proxy": HTTP_PROXY} if HTTP_PROXY else {}
+    async with session.delete(url, headers=headers, params=params or {}, **extra) as resp:
+        text = await resp.text()
+        if resp.status >= 400:
+            logger.warning("EXTENDED DELETE %s: status=%s body=%s", path, resp.status, text[:300])
+        data = await safe_json(text)
+        return resp.status, data
 
 async def _extended_patch(path: str, json_body: dict):
     url = f"{EXTENDED_HTTP_BASE}{path}"
     headers = {"X-Api-Key": API_KEY, "Content-Type": "application/json", "User-Agent": "X10Bot/1.0"}
-    logger.info("EXTENDED PATCH: %s body=%s", url, json_body)
+    logger.debug("EXTENDED PATCH: %s body=%s", url, json_body)
 
-    async with aiohttp.ClientSession() as session:
-        async with session.patch(url, headers=headers, json=json_body) as resp:
-            text = await resp.text()
-            logger.info("EXTENDED RAW PATCH: status=%s body=[%s]", resp.status, text[:300])
-            data = await safe_json(text)
-            return resp.status, data
+    session = await _get_http_session()
+    extra = {"proxy": HTTP_PROXY} if HTTP_PROXY else {}
+    async with session.patch(url, headers=headers, json=json_body, **extra) as resp:
+        text = await resp.text()
+        if resp.status >= 400:
+            logger.warning("EXTENDED PATCH %s: status=%s body=%s", path, resp.status, text[:300])
+        data = await safe_json(text)
+        return resp.status, data
+
+# ✅ FIX: единая проверка «уже размещён» (раньше string match был хрупким)
+def _is_idempotent_already_placed(err: Exception) -> bool:
+    err_str = str(err).lower()
+    needles = ["already placed", "hash already", "duplicate", "already exists", "externalid already"]
+    return any(n in err_str for n in needles)
 
 async def _get_best_price_from_orderbook(market: str, side: OrderSide) -> Decimal | None:
     """
@@ -206,9 +263,10 @@ async def _get_best_price_from_orderbook(market: str, side: OrderSide) -> Decima
         logger.warning("_get_best_price_from_orderbook failed for %s: %s", market, e)
     return None
 
-async def _wait_position_closed(market: str, side: str, timeout_sec: float = 10.0) -> bool:
+async def _wait_position_closed(market: str, side: str, timeout_sec: float = 25.0) -> bool:
+    # ✅ FIX: было 10s и 0.3s — под нагрузкой Extended этого мало и бьёт rate-limit
     start = time.time()
-    poll_interval = 0.3
+    poll_interval = 0.5
 
     while time.time() - start < timeout_sec:
         try:
@@ -478,6 +536,19 @@ async def _place_market_order_task(external_id: str, market: str, side: OrderSid
         logger.exception("TASK %s MARKET critical failure", external_id)
         ORDER_TASKS[external_id] = {"status": "error", "error": str(e), "order_id": None}
 
+async def _get_position_size(market: str, side: str) -> Decimal:
+    """✅ NEW: актуальный остаток позиции для дозакрытия."""
+    try:
+        status, data = await _extended_get("/api/v1/user/positions", params={"market": market, "side": side})
+        if status != 200 or not isinstance(data, dict):
+            return Decimal("0")
+        positions = data.get("data", [])
+        if not positions:
+            return Decimal("0")
+        return Decimal(str(positions[0].get("size", "0")))
+    except Exception:
+        return Decimal("0")
+
 async def _close_position_task(external_id: str, market: str, side: OrderSide, size: Decimal, current_side: str):
     try:
         ORDER_TASKS[external_id] = {"status": "running", "started": time.time(), "error": None, "order_id": None}
@@ -489,58 +560,74 @@ async def _close_position_task(external_id: str, market: str, side: OrderSide, s
 
         slippage_pct = Decimal("2.0")
 
-        # ✅ ИСПРАВЛЕНИЕ: цена закрытия тоже от стакана
-        book_price = await _get_best_price_from_orderbook(market, side)
-        if book_price is not None:
+        async def _calc_close_price() -> Decimal:
+            """✅ FIX: цена пересчитывается перед каждой попыткой."""
+            book_price = await _get_best_price_from_orderbook(market, side)
+            if book_price is None:
+                logger.warning("TASK %s CLOSE orderbook unavailable, fallback to mark_price", external_id)
+                book_price = await get_mark_price(market)
             if side == OrderSide.BUY:
-                price = book_price * (Decimal("1") + slippage_pct / Decimal("100"))
+                p = book_price * (Decimal("1") + slippage_pct / Decimal("100"))
             else:
-                price = book_price * (Decimal("1") - slippage_pct / Decimal("100"))
-            logger.info("TASK %s CLOSE price from orderbook: best=%s slippage=%s%% final=%s",
-                        external_id, book_price, slippage_pct, price)
-        else:
-            mark_price = await get_mark_price(market)
-            logger.warning("TASK %s CLOSE orderbook unavailable, fallback to mark_price=%s", external_id, mark_price)
-            if side == OrderSide.BUY:
-                price = mark_price * (Decimal("1") + slippage_pct / Decimal("100"))
-            else:
-                price = mark_price * (Decimal("1") - slippage_pct / Decimal("100"))
-
-        price_decimal = _round_down(price, tick_size)
-        size_decimal = _round_down(size, step_size)
-
-        logger.info("TASK %s CLOSE placing: market=%s side=%s size=%s price=%s current_side=%s",
-                    external_id, market, side.name, size_decimal, price_decimal, current_side)
+                p = book_price * (Decimal("1") - slippage_pct / Decimal("100"))
+            return _round_down(p, tick_size)
 
         order_id = None
         final_status = "checking"
+        # ✅ FIX: до 3 попыток + валидация позиции (раньше — голый вызов, 8s timeout)
+        max_attempts = 3
+        last_err: Exception | None = None
+        remaining = _round_down(size, step_size)
 
-        try:
-            placed = await asyncio.wait_for(
-                blocking_client.create_and_place_order(
-                    market_name=market,
-                    amount_of_synthetic=size_decimal,
-                    price=price_decimal,
-                    side=side,
-                    post_only=False,
-                    external_id=external_id,
-                ),
-                timeout=8.0
-            )
-            order_id = str(getattr(placed, "id", "unknown"))
-            logger.info("TASK %s CLOSE: SDK returned order_id=%s", external_id, order_id)
-            final_status = "filled"
-        except asyncio.TimeoutError:
-            logger.warning("TASK %s CLOSE: SDK timeout → skip to validation", external_id)
-            final_status = "checking"
-        except Exception as e:
-            err_str = str(e).lower()
-            if "already placed" in err_str or "hash already" in err_str:
-                logger.info("TASK %s CLOSE: already placed → skip to validation", external_id)
+        for attempt in range(1, max_attempts + 1):
+            if remaining < min_order_size:
+                logger.info("TASK %s CLOSE: остаток %s < min_order_size %s → done",
+                            external_id, remaining, min_order_size)
+                break
+
+            price_decimal = await _calc_close_price()
+            attempt_external_id = external_id if attempt == 1 else f"{external_id}-r{attempt}"
+
+            logger.info("TASK %s CLOSE attempt=%d: market=%s side=%s size=%s price=%s",
+                        external_id, attempt, market, side.name, remaining, price_decimal)
+
+            try:
+                placed = await asyncio.wait_for(
+                    blocking_client.create_and_place_order(
+                        market_name=market,
+                        amount_of_synthetic=remaining,
+                        price=price_decimal,
+                        side=side,
+                        post_only=False,
+                        external_id=attempt_external_id,
+                    ),
+                    timeout=20.0  # ✅ FIX: было 8s
+                )
+                order_id = str(getattr(placed, "id", "unknown"))
+                logger.info("TASK %s CLOSE attempt=%d SDK ok order_id=%s", external_id, attempt, order_id)
                 final_status = "filled"
-            else:
-                logger.warning("TASK %s CLOSE SDK failed: %s → skip to validation", external_id, err_str)
-                final_status = "checking"
+            except asyncio.TimeoutError as e:
+                logger.warning("TASK %s CLOSE attempt=%d: SDK timeout", external_id, attempt)
+                last_err = e
+            except Exception as e:
+                last_err = e
+                if _is_idempotent_already_placed(e):
+                    logger.info("TASK %s CLOSE attempt=%d: already placed (идемпотентно)", external_id, attempt)
+                    final_status = "filled"
+                else:
+                    logger.warning("TASK %s CLOSE attempt=%d SDK failed: %s", external_id, attempt, e)
+
+            # ✅ FIX: после каждой попытки — реально смотрим остаток
+            await asyncio.sleep(1.0)
+            current_size = await _get_position_size(market, current_side)
+            if current_size <= Decimal("0") or current_size < min_order_size:
+                logger.info("TASK %s CLOSE: confirmed closed after attempt %d", external_id, attempt)
+                final_status = "closed_confirmed"
+                break
+            remaining = _round_down(current_size, step_size)
+            logger.warning("TASK %s CLOSE attempt=%d: остаток %s, ретрай",
+                           external_id, attempt, remaining)
+            await asyncio.sleep(1.0)
 
         if final_status == "checking":
             status, data = await _extended_get("/api/v1/user/orders/history", params={"externalId": external_id})
@@ -548,16 +635,16 @@ async def _close_position_task(external_id: str, market: str, side: OrderSide, s
                 order_id = str(data["data"][0].get("id", "unknown"))
                 final_status = "filled"
 
-        logger.info("TASK %s CLOSE: order status=%s, VALIDATING position closure for %s %s...",
-                    external_id, final_status, market, current_side)
-
-        closed = await _wait_position_closed(market, current_side, timeout_sec=10.0)
+        # Финальная валидация
+        logger.info("TASK %s CLOSE: VALIDATING position closure for %s %s...",
+                    external_id, market, current_side)
+        closed = await _wait_position_closed(market, current_side, timeout_sec=25.0)
 
         if closed:
             logger.info("TASK %s CLOSE: position CONFIRMED closed", external_id)
             final_status = "closed_confirmed"
         else:
-            logger.warning("TASK %s CLOSE: position NOT confirmed closed (timeout), check manually", external_id)
+            logger.warning("TASK %s CLOSE: NOT confirmed closed (last_err=%s)", external_id, last_err)
             final_status = "closed_timeout"
 
         ORDER_TASKS[external_id] = {
@@ -577,14 +664,31 @@ async def _close_position_task(external_id: str, market: str, side: OrderSide, s
 
 @app.route("/health", methods=["GET"])
 def health():
+    # ✅ FIX: расширенный healthcheck для оркестратора
+    sdk_ok = blocking_client is not None
+    session_ok = _HTTP_SESSION is not None and not _HTTP_SESSION.closed
     return jsonify({
-        "status": "ok",
+        "status": "ok" if (sdk_ok and session_ok) else "degraded",
         "vault": VAULT_ID,
         "proxy": HTTP_PROXY or "NONE",
         "aiohttp_timeout": "total=30 connect=10 sock_read=20",
         "api_key_set": bool(API_KEY),
         "market_cache_ttl_sec": _MARKET_CACHE_TTL_SEC,
+        "sdk_ready": sdk_ok,
+        "http_session_ready": session_ok,
+        "sdk_last_fail_ts": _SDK_LAST_FAIL_TS,
     })
+
+@app.route("/admin/reinit", methods=["POST"])
+def admin_reinit():
+    """✅ NEW: ручной reinit SDK без рестарта процесса."""
+    global blocking_client
+    try:
+        blocking_client = None
+        _submit(_reinit_sdk_if_needed(), timeout_sec=60)
+        return jsonify({"status": "ok", "reinit": True})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route("/order", methods=["POST"])
 def place_order():

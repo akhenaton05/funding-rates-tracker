@@ -1538,7 +1538,6 @@ async def debug_api_methods():
         cls = getattr(lighter, cls_name, None)
         if cls:
             instance = cls(api_client)
-            # только публичные методы без служебных
             result[cls_name] = [m for m in dir(instance)
                                if not m.startswith('_') and callable(getattr(instance, m))]
     return jsonify(result)

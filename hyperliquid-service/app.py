@@ -61,7 +61,7 @@ def init_clients():
     logger.info(f"Testnet:  {HL_TESTNET}")
 
     try:
-        info_client = Info(BASE_URL, skip_ws=True)
+        info_client = Info(BASE_URL, skip_ws=True, spot_meta={"tokens": [], "universe": []})
         logger.info("Info client initialized OK")
     except Exception as e:
         logger.error(f"Failed to init Info client: {e}", exc_info=True)

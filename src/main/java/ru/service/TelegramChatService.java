@@ -114,6 +114,9 @@ public class TelegramChatService extends TelegramLongPollingBot {
             case "/history" -> getTradeHistory(chatId);
             case "/blacklist" -> addToBlacklist(chatId, parts);
             case "/blacklist_remove" -> removeFromBlacklist(chatId, parts);
+            case "/exchange_disable" -> disableExchange(chatId, parts);
+            case "/exchange_enable" -> enableExchange(chatId, parts);
+            case "/exchanges" -> showExchanges(chatId);
         }
     }
 
@@ -296,7 +299,7 @@ public class TelegramChatService extends TelegramLongPollingBot {
     @Async
     public void handleFundingAlert(FundingAlertEvent event) {
         log.info("[Telegram] Received funding alert event for chat {}", event.getChatId());
-        sendMessageAndScheduleDelete (event.getChatId(), formatAlert(event.getMessage()), 6);
+        sendMessageAndScheduleDelete(event.getChatId(), formatAlert(event.getMessage()), 6);
     }
 
     @EventListener
@@ -367,7 +370,7 @@ public class TelegramChatService extends TelegramLongPollingBot {
             Integer msgId = positionMessageIds.get(event.getPositionId());
             editMessage(chatId, msgId, message);
 
-            if(!event.isSuccess()) {
+            if (!event.isSuccess()) {
                 scheduleDelete(chatId, msgId, 5);
             }
 
@@ -508,7 +511,7 @@ public class TelegramChatService extends TelegramLongPollingBot {
         return String.format(
                 "🤖 *FundingBot:* Position `%s` Update \uD83D\uDCCC\n\n" +
                         "*Ticker:* %s\n" +
-                        "*Notification:* %s\n"+
+                        "*Notification:* %s\n" +
                         "*Message:* %s\n",
                 event.getPositionId(),
                 event.getTicker(),
@@ -522,7 +525,7 @@ public class TelegramChatService extends TelegramLongPollingBot {
         Duration hold = Duration.between(pnl.getOpenTime(), LocalDateTime.now(ZoneOffset.UTC));
 
         double openSpread = pnl.getFirstSnapshot().getEntryPrice() > 0 && pnl.getSecondSnapshot().getEntryPrice() > 0
-                ? Math.abs( pnl.getFirstSnapshot().getEntryPrice() - pnl.getSecondSnapshot().getEntryPrice())
+                ? Math.abs(pnl.getFirstSnapshot().getEntryPrice() - pnl.getSecondSnapshot().getEntryPrice())
                   / Math.min(pnl.getFirstSnapshot().getEntryPrice(), pnl.getSecondSnapshot().getEntryPrice()) * 100 : 0;
         double markSpread = pnl.getFirstSnapshot().getMarkPrice() > 0 && pnl.getSecondSnapshot().getMarkPrice() > 0
                 ? Math.abs(pnl.getFirstSnapshot().getMarkPrice() - pnl.getSecondSnapshot().getMarkPrice())
@@ -979,5 +982,29 @@ public class TelegramChatService extends TelegramLongPollingBot {
         String ticker = parts[1].trim().toUpperCase();
         fundingContext.removeFromBlacklist(ticker);
         sendMessageAndScheduleDelete(chatId, "🤖 *FundingBot:* Removed from blacklist: " + ticker, 3);
+    }
+
+    private void disableExchange(Long chatId, String[] parts) {
+        if (parts.length < 2 || parts[1].trim().isEmpty()) {
+            sendMessage(chatId, "Usage: /exchange_disable NAME");
+            return;
+        }
+        String exchange = parts[1].trim().toUpperCase();
+        fundingContext.disableExchange(exchange);
+        sendMessageAndScheduleDelete(chatId, "🤖 *FundingBot:* Exchange " + exchange + " disabled: ", 2);
+    }
+
+    private void enableExchange(Long chatId, String[] parts) {
+        if (parts.length < 2 || parts[1].trim().isEmpty()) {
+            sendMessage(chatId, "Usage: /exchange_enaable NAME");
+            return;
+        }
+        String exchange = parts[1].trim().toUpperCase();
+        fundingContext.enableExchange(exchange);
+        sendMessageAndScheduleDelete(chatId, "🤖 *FundingBot:* Exchange " + exchange + " enabled: ", 2);
+    }
+
+    private void showExchanges(Long chatId) {
+        sendMessageAndScheduleDelete(chatId, "🤖 *FundingBot:* Enabled exchanges " + fundingContext.getDisabledExchanges(), 2);
     }
 }

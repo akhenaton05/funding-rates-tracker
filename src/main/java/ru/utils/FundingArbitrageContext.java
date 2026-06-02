@@ -15,6 +15,7 @@ public class FundingArbitrageContext {
 
     private final Set<Long> subscriberIds = ConcurrentHashMap.newKeySet();
     private final Set<String> tickerBlacklist = ConcurrentHashMap.newKeySet();
+    private final Set<String> disabledExchanges = ConcurrentHashMap.newKeySet();
 
     public FundingArbitrageContext(FundingConfig fundingConfig) {
         if (fundingConfig.getTickerBlacklist() != null) {
@@ -62,4 +63,21 @@ public class FundingArbitrageContext {
         return Collections.unmodifiableSet(subscriberIds);
     }
 
+    public void disableExchange(String exchange) {
+        disabledExchanges.add(exchange.toLowerCase());
+        log.info("Exchange disabled: {}", exchange);
+    }
+
+    public void enableExchange(String exchange) {
+        disabledExchanges.remove(exchange.toLowerCase());
+        log.info("Exchange enabled: {}", exchange);
+    }
+
+    public Set<String> getDisabledExchanges() {
+        return Collections.unmodifiableSet(disabledExchanges);
+    }
+
+    public boolean isExchangeDisabled(String exchange) {
+        return disabledExchanges.contains(exchange.toLowerCase());
+    }
 }

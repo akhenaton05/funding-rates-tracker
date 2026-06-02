@@ -171,7 +171,7 @@ public class FundingArbitrageService {
         for (Map.Entry<String, Map<String, Object>> entry : fundingRates.entrySet()) {
             String exchangeName = entry.getKey().toLowerCase();
 
-            if (SUPPORTED_EXCHANGES.contains(exchangeName)) {
+            if (SUPPORTED_EXCHANGES.contains(exchangeName) && !fundingContext.isExchangeDisabled(exchangeName)) {
                 filteredRates.put(entry.getKey(), entry.getValue());
             }
         }

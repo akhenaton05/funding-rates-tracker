@@ -19,6 +19,7 @@ import org.springframework.stereotype.Component;
 import ru.dto.exchanges.ExchangeType;
 import ru.dto.exchanges.OrderResult;
 import ru.dto.exchanges.aster.*;
+import ru.dto.funding.aster.AsterFundingResponse;
 import ru.exceptions.aster.AsterApiException;
 import ru.exceptions.aster.AsterIpBanException;
 import ru.exceptions.aster.AsterRateLimitException;
@@ -190,6 +191,32 @@ public class AsterClient {
         } catch (Exception e) {
             log.error("[Aster] Error {} request {}", method, endpoint, e);
             return null;
+        }
+    }
+
+    public List<AsterFundingResponse> getFundingList() {
+        try {
+            String response = executePublicGet("/fapi/v1/premiumIndex", null);
+
+            if (response == null || response.isEmpty()) {
+                log.info("[Aster] Response for funding rates lists is empty");
+                return Collections.emptyList();
+            }
+
+            List<AsterFundingResponse> fundingsList = objectMapper.readValue(
+                    response,
+                    objectMapper.getTypeFactory().constructCollectionType(List.class, AsterFundingResponse.class)
+            );
+
+            return fundingsList.stream()
+                    .filter(Objects::nonNull)
+                    .filter(s -> s.getSymbol() != null && s.getSymbol().endsWith("USDT"))
+                    .peek(s -> s.setSymbol(s.getSymbol().substring(0, s.getSymbol().length() - 4)))
+                    .toList();
+
+        } catch (Exception e) {
+            log.error("[AsterClient] getFundingList error", e);
+            return Collections.emptyList();
         }
     }
 
@@ -835,7 +862,8 @@ public class AsterClient {
                 log.warn("[Aster] Bracket limit for leverage: {}", msg);
                 return null;
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
 
         log.error("[Aster] API Error: code={}, body={}", code, body);
         throw new RuntimeException("[Aster] API error: " + code + " → " + body);
@@ -1083,26 +1111,38 @@ public class AsterClient {
             // Суммируем по всем трейдам ордера (ордер мог исполниться частями)
             double totalPnl = orderTrades.stream()
                     .mapToDouble(t -> {
-                        try { return Double.parseDouble(t.getRealizedPnl()); }
-                        catch (Exception e) { return 0.0; }
+                        try {
+                            return Double.parseDouble(t.getRealizedPnl());
+                        } catch (Exception e) {
+                            return 0.0;
+                        }
                     }).sum();
 
             double totalCommission = orderTrades.stream()
                     .mapToDouble(t -> {
-                        try { return Double.parseDouble(t.getCommission()); }
-                        catch (Exception e) { return 0.0; }
+                        try {
+                            return Double.parseDouble(t.getCommission());
+                        } catch (Exception e) {
+                            return 0.0;
+                        }
                     }).sum();
 
             double totalQty = orderTrades.stream()
                     .mapToDouble(t -> {
-                        try { return Double.parseDouble(t.getQty()); }
-                        catch (Exception e) { return 0.0; }
+                        try {
+                            return Double.parseDouble(t.getQty());
+                        } catch (Exception e) {
+                            return 0.0;
+                        }
                     }).sum();
 
             double totalQuoteQty = orderTrades.stream()
                     .mapToDouble(t -> {
-                        try { return Double.parseDouble(t.getQuoteQty()); }
-                        catch (Exception e) { return 0.0; }
+                        try {
+                            return Double.parseDouble(t.getQuoteQty());
+                        } catch (Exception e) {
+                            return 0.0;
+                        }
                     }).sum();
 
             double avgPrice = totalQty > 0 ? totalQuoteQty / totalQty : 0.0;
@@ -1160,8 +1200,11 @@ public class AsterClient {
 
             double total = incomes.stream()
                     .mapToDouble(e -> {
-                        try { return Double.parseDouble((String) e.get("income")); }
-                        catch (Exception ex) { return 0.0; }
+                        try {
+                            return Double.parseDouble((String) e.get("income"));
+                        } catch (Exception ex) {
+                            return 0.0;
+                        }
                     })
                     .sum();
 

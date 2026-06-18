@@ -10,19 +10,28 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import ru.client.aster.AsterClient;
+import ru.client.hyperliquid.HyperliquidClient;
+import ru.client.lighter.LighterClient;
 import ru.config.FundingConfig;
 import ru.dto.exchanges.Direction;
 import ru.dto.exchanges.ExchangePosition;
 import ru.dto.exchanges.ExchangeType;
+import ru.dto.funding.FundingApiResponseDto;
 import ru.dto.funding.FundingOpenSignal;
 import ru.dto.funding.ArbitrageRates;
 import ru.dto.funding.HoldingMode;
+import ru.dto.funding.aster.AsterFundingResponse;
 import ru.event.FundingAlertEvent;
 import ru.event.NewArbitrageEvent;
+import ru.utils.FundingApiParser;
 import ru.utils.FundingArbitrageContext;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -33,24 +42,21 @@ public class FundingArbitrageService {
     private final FundingArbitrageContext fundingContext;
     private final ApplicationEventPublisher eventPublisher;
     private final FundingConfig fundingConfig;
-    private static final String API_URL = "https://api.loris.tools/funding";
-
-    //Cache for API response for parsing
-    private Map<String, Object> cachedFullResponse = null;
-    private long lastFetchTime = 0;
-    private static final long CACHE_TTL_MS = 60000; // 1 min cache life
+    private final FundingApiParser fundingApiParser;
 
     private static final Set<String> SUPPORTED_EXCHANGES = Set.of(
             "lighter",
-            "extended",
+            //"extended",
             "aster",
             "hyperliquid"
     );
 
     public FundingArbitrageService(CloseableHttpClient httpClient,
                                    FundingArbitrageContext fundingContext,
-                                   ApplicationEventPublisher eventPublisher, FundingConfig fundingConfig) {
+                                   ApplicationEventPublisher eventPublisher,
+                                   FundingConfig fundingConfig, FundingApiParser fundingApiParser) {
         this.fundingConfig = fundingConfig;
+        this.fundingApiParser = fundingApiParser;
         this.objectMapper = new ObjectMapper();
         this.httpClient = httpClient;
         this.fundingContext = fundingContext;
@@ -131,28 +137,10 @@ public class FundingArbitrageService {
         }
     }
 
-    public Map<String, Map<String, Object>> getFundingRates() {
-        Map<String, Object> fullResponse = getFullApiResponse();
 
-        if (fullResponse.isEmpty()) {
-            log.error("[FundingBot] Full response is empty");
-            return Collections.emptyMap();
-        }
-
-        Map<String, Map<String, Object>> fundingRates =
-                (Map<String, Map<String, Object>>) fullResponse.get("funding_rates");
-
-        if (fundingRates == null) {
-            log.error("[FundingBot] No funding_rates in API response");
-            return Collections.emptyMap();
-        }
-
-        log.info("[FundingBot] Funding rates found");
-        return fundingRates;
-    }
 
     public List<ArbitrageRates> calculateArbitrageRates() {
-        Map<String, Map<String, Object>> fundingRates = getFundingRates();
+        Map<String, Map<String, Object>> fundingRates = fundingApiParser.getFundingRates();
 
         if (fundingRates.isEmpty()) {
             log.error("[FundingBot] No funding rates available");
@@ -161,7 +149,7 @@ public class FundingArbitrageService {
 
         Map<String, Integer> oiRankings = Collections.emptyMap();
         if (fundingConfig.getOi().isEnabled()) {
-            oiRankings = getOiRankings();
+            //oiRankings = getOiRankings();
             log.info("[FundingBot] OI filter enabled with max rank: {}",
                     fundingConfig.getOi().getMaxRank());
         }
@@ -257,7 +245,7 @@ public class FundingArbitrageService {
                 double ex1Rate = ((Number) entry.getValue()).doubleValue();
                 double ex2Rate = ((Number) ex2Rates.get(symbol)).doubleValue();
 
-                double arbitrage = Math.abs(ex1Rate - ex2Rate);
+                double arbitrage = Math.abs(ex1Rate - ex2Rate) * 100; //Normalizing to bps * 100
 
                 String action = buildActionDescription(
                         ex1Name, ex1Rate, ex1Type,
@@ -339,100 +327,100 @@ public class FundingArbitrageService {
                 .build();
     }
 
-    private Map<String, Map<String, Object>> executeRequest(HttpGet httpGet) throws Exception {
-        try (CloseableHttpResponse response = httpClient.execute(httpGet)) {
-            String responseBody = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
-            log.debug("Received response: {}", responseBody);
-            return parseResponse(responseBody);
-        } catch (Exception e) {
-            log.error("Error sending request", e);
-            throw new Exception("Error sending request: " + e.getMessage());
-        }
-    }
+//    private Map<String, Map<String, Object>> executeRequest(HttpGet httpGet) throws Exception {
+//        try (CloseableHttpResponse response = httpClient.execute(httpGet)) {
+//            String responseBody = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
+//            log.debug("Received response: {}", responseBody);
+//            return parseResponse(responseBody);
+//        } catch (Exception e) {
+//            log.error("Error sending request", e);
+//            throw new Exception("Error sending request: " + e.getMessage());
+//        }
+//    }
 
-    private Map<String, Map<String, Object>> parseResponse(String responseBody) throws Exception {
-        Map<String, Object> fullResponse = objectMapper.readValue(responseBody, Map.class);
-        log.info("Full response received");
+//    private Map<String, Map<String, Object>> parseResponse(String responseBody) throws Exception {
+//        Map<String, Object> fullResponse = objectMapper.readValue(responseBody, Map.class);
+//        log.info("Full response received");
+//
+//        Map<String, Map<String, Object>> fundingRates =
+//                (Map<String, Map<String, Object>>) fullResponse.get("funding_rates");
+//
+//        if (Objects.isNull(fundingRates)) {
+//            throw new ValidationException("Failed to get funding rates");
+//        }
+//
+//        log.info("Funding rates found");
+//        return fundingRates;
+//    }
 
-        Map<String, Map<String, Object>> fundingRates =
-                (Map<String, Map<String, Object>>) fullResponse.get("funding_rates");
+//    private Map<String, Object> getFullApiResponse() {
+//        long now = System.currentTimeMillis();
+//
+//        if (cachedFullResponse != null && (now - lastFetchTime) < CACHE_TTL_MS) {
+//            log.debug("[FundingBot] Using cached API response");
+//            return cachedFullResponse;
+//        }
+//
+//        try {
+//            HttpGet httpGet = new HttpGet(API_URL);
+//
+//            try (CloseableHttpResponse response = httpClient.execute(httpGet)) {
+//                String responseBody = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
+//                log.debug("Received response: {}", responseBody);
+//
+//                cachedFullResponse = objectMapper.readValue(responseBody, Map.class);
+//                lastFetchTime = now;
+//
+//                log.info("[FundingBot] Full API response received and cached");
+//                return cachedFullResponse;
+//            }
+//
+//        } catch (Exception e) {
+//            log.error("[FundingBot] Failed to get API response", e);
+//            return Collections.emptyMap();
+//        }
+//    }
 
-        if (Objects.isNull(fundingRates)) {
-            throw new ValidationException("Failed to get funding rates");
-        }
-
-        log.info("Funding rates found");
-        return fundingRates;
-    }
-
-    private Map<String, Object> getFullApiResponse() {
-        long now = System.currentTimeMillis();
-
-        if (cachedFullResponse != null && (now - lastFetchTime) < CACHE_TTL_MS) {
-            log.debug("[FundingBot] Using cached API response");
-            return cachedFullResponse;
-        }
-
-        try {
-            HttpGet httpGet = new HttpGet(API_URL);
-
-            try (CloseableHttpResponse response = httpClient.execute(httpGet)) {
-                String responseBody = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
-                log.debug("Received response: {}", responseBody);
-
-                cachedFullResponse = objectMapper.readValue(responseBody, Map.class);
-                lastFetchTime = now;
-
-                log.info("[FundingBot] Full API response received and cached");
-                return cachedFullResponse;
-            }
-
-        } catch (Exception e) {
-            log.error("[FundingBot] Failed to get API response", e);
-            return Collections.emptyMap();
-        }
-    }
-
-    private Map<String, Integer> getOiRankings() {
-        Map<String, Object> fullResponse = getFullApiResponse();
-
-        if (fullResponse.isEmpty()) {
-            log.warn("[FundingBot] Full response is empty");
-            return Collections.emptyMap();
-        }
-
-        Map<String, Object> oiRankingsRaw = (Map<String, Object>) fullResponse.get("oi_rankings");
-
-        if (oiRankingsRaw == null) {
-            log.warn("[FundingBot] No oi_rankings in API response");
-            return Collections.emptyMap();
-        }
-
-        Map<String, Integer> oiRankings = new HashMap<>();
-
-        for (Map.Entry<String, Object> entry : oiRankingsRaw.entrySet()) {
-            String symbol = entry.getKey();
-            Object rankValue = entry.getValue();
-
-            try {
-                int rank;
-                if (rankValue instanceof String) {
-                    String rankStr = (String) rankValue;
-                    rank = rankStr.contains("+") ? 999 : Integer.parseInt(rankStr);
-                } else {
-                    rank = ((Number) rankValue).intValue();
-                }
-
-                oiRankings.put(symbol, rank);
-
-            } catch (Exception e) {
-                log.debug("[FundingBot] Failed to parse rank for {}: {}", symbol, rankValue);
-            }
-        }
-
-        log.info("[FundingBot] Parsed {} OI rankings", oiRankings.size());
-        return oiRankings;
-    }
+//    private Map<String, Integer> getOiRankings() {
+//        Map<String, Object> fullResponse = getFullApiResponse();
+//
+//        if (fullResponse.isEmpty()) {
+//            log.warn("[FundingBot] Full response is empty");
+//            return Collections.emptyMap();
+//        }
+//
+//        Map<String, Object> oiRankingsRaw = (Map<String, Object>) fullResponse.get("oi_rankings");
+//
+//        if (oiRankingsRaw == null) {
+//            log.warn("[FundingBot] No oi_rankings in API response");
+//            return Collections.emptyMap();
+//        }
+//
+//        Map<String, Integer> oiRankings = new HashMap<>();
+//
+//        for (Map.Entry<String, Object> entry : oiRankingsRaw.entrySet()) {
+//            String symbol = entry.getKey();
+//            Object rankValue = entry.getValue();
+//
+//            try {
+//                int rank;
+//                if (rankValue instanceof String) {
+//                    String rankStr = (String) rankValue;
+//                    rank = rankStr.contains("+") ? 999 : Integer.parseInt(rankStr);
+//                } else {
+//                    rank = ((Number) rankValue).intValue();
+//                }
+//
+//                oiRankings.put(symbol, rank);
+//
+//            } catch (Exception e) {
+//                log.debug("[FundingBot] Failed to parse rank for {}: {}", symbol, rankValue);
+//            }
+//        }
+//
+//        log.info("[FundingBot] Parsed {} OI rankings", oiRankings.size());
+//        return oiRankings;
+//    }
 }
 
 

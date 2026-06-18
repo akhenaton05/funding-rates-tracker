@@ -4,11 +4,20 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.hc.client5.http.classic.methods.HttpGet;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
+import org.apache.hc.core5.http.io.entity.EntityUtils;
+import org.apache.hc.core5.net.URIBuilder;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 import ru.dto.exchanges.ExchangeType;
 import ru.dto.exchanges.OrderResult;
 import ru.dto.exchanges.lighter.*;
+import ru.dto.funding.aster.AsterFundingResponse;
+import ru.dto.funding.lighter.LighterFundingRatesResponse;
+import ru.dto.funding.lighter.LighterFundingResponse;
+import ru.exceptions.OpeningPositionException;
 
 import java.io.IOException;
 import java.net.URI;
@@ -17,6 +26,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,19 +38,44 @@ import java.util.Map;
 public class LighterClient {
 
     private final ObjectMapper objectMapper;
+    private final CloseableHttpClient httpClient;
     private final HttpClient localHttpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
     private String baseUrl;
+    private static final String URL = "https://mainnet.zklighter.elliot.ai";
 
-    public LighterClient(ObjectMapper objectMapper) {
+    public LighterClient(ObjectMapper objectMapper, CloseableHttpClient httpClient) {
         this.objectMapper = objectMapper;
+        this.httpClient = httpClient;
     }
 
     /**
      * Utils
      */
+
+    private String executePublicGet(String endpoint, String queryParams) {
+        try {
+            URI uri = new URIBuilder(URL + endpoint)
+                    .setCustomQuery(queryParams)
+                    .build();
+
+            HttpGet get = new HttpGet(uri);
+            log.info("[LighterController] Public GET {}", uri);
+
+            try (CloseableHttpResponse resp = httpClient.execute(get)) {
+                int code = resp.getCode();
+                String body = EntityUtils.toString(resp.getEntity(), StandardCharsets.UTF_8);
+                if (code == 200) return body;
+                log.error("[LighterController] Public GET error: code={}, body={}", code, body);
+                return null;
+            }
+        } catch (Exception e) {
+            log.error("[LighterController] Public GET error {}", endpoint, e);
+            return null;
+        }
+    }
 
     public List<LighterMarket> getMarkets() {
         String url = baseUrl + "/markets";
@@ -69,6 +104,64 @@ public class LighterClient {
         } catch (Exception e) {
             log.error("[Lighter] Failed to get markets", e);
             return List.of();
+        }
+    }
+
+    public List<LighterFundingResponse> getFundingList() {
+        try {
+            String response = executePublicGet("/api/v1/funding-rates", null);
+
+            if (response == null) {
+                return null;
+            }
+
+            if(!response.isEmpty()) {
+                log.info("[LighterController] Got response for funding rates lists");
+            } else {
+                log.info("[LighterController] Response for funding rates lists is empty");
+                return new ArrayList<>();
+            }
+
+            LighterFundingRatesResponse fundingResponse = objectMapper.readValue(response, LighterFundingRatesResponse.class);
+
+            List<LighterFundingResponse> fundingList = fundingResponse.getFundingRates().stream()
+                    .filter(obj -> obj.getExchange().equalsIgnoreCase("lighter"))
+                    .toList();
+
+            log.info("[AsterController] got list {}", fundingList);
+
+            return fundingList;
+
+        } catch (Exception e) {
+            log.error(e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+
+    public List<AsterFundingResponse> getFundingLists() {
+        try {
+            String response = executePublicGet("/fapi/v1/premiumIndex", null);
+
+            if (response == null) {
+                return null;
+            }
+
+            if(!response.isEmpty()) {
+                log.info("[Aster] Got response for funding rates lists");
+            } else {
+                log.info("[Aster] Response for funding rates lists is empty");
+                return new ArrayList<>();
+            }
+
+            List<AsterFundingResponse> fundingsList = objectMapper.readValue(response,
+                    objectMapper.getTypeFactory().constructCollectionType(List.class, AsterFundingResponse.class));
+            log.info("[Aster] got list {}", fundingsList);
+
+            return fundingsList;
+
+        } catch (Exception e) {
+            log.error(e.getMessage());
+            return new ArrayList<>();
         }
     }
 
@@ -219,7 +312,6 @@ public class LighterClient {
     /**
      * Open\Close\View position
      */
-
     public String openMarketPosition(String market, String side, double size) {
         String url = baseUrl + "/order/market";
 
@@ -230,7 +322,7 @@ public class LighterClient {
 
         try {
             String jsonBody = objectMapper.writeValueAsString(body);
-            log.info("[Lighter] Opening position: {}", jsonBody);
+            log.info("[Lighter] Open position response: {}", jsonBody);
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
@@ -247,7 +339,7 @@ public class LighterClient {
 
             if (response.statusCode() != 200) {
                 log.error("[Lighter] Open HTTP error: {}", response.statusCode());
-                return null;
+                throw new OpeningPositionException("[Lighter] HTTP error opening position: " + response.statusCode());
             }
 
             LighterMarketOrderResponse dto = objectMapper.readValue(
@@ -255,15 +347,17 @@ public class LighterClient {
 
             if (!"success".equalsIgnoreCase(dto.getStatus())) {
                 log.error("[Lighter] Open failed: status={}", dto.getStatus());
-                return null;
+                throw new OpeningPositionException("[Lighter] Error opening position: " + dto.getMessage());
             }
 
             log.info("[Lighter] Position opened: tx={}", dto.getTxHash());
             return dto.getTxHash();
 
+        } catch (OpeningPositionException e) {
+            throw e;
         } catch (Exception e) {
             log.error("[Lighter] Exception opening position", e);
-            return null;
+            throw new OpeningPositionException("[Lighter] Technical error opening position", e);
         }
     }
 
@@ -274,12 +368,13 @@ public class LighterClient {
 
         if (size <= 0) {
             log.error("[Lighter] Invalid size: {}", size);
-            return null;
+            throw new OpeningPositionException("[Lighter] Invalid order size: " + size);
         }
 
         return openMarketPosition(market, side, size);
     }
 
+    @Deprecated
     public String openPositionWithFixedMargin(String market, double marginUsd,
                                               int leverage, String direction) {
         log.warn("[Lighter] openPositionWithFixedMargin requires price endpoint");

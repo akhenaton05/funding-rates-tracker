@@ -1,15 +1,3 @@
-"""
-Lighter Exchange Service - FINAL FIXED VERSION
-Динамическая загрузка всех рынков через API
-
-ИСПРАВЛЕНО:
-- orderbook: order_book_orders(market_id=..., limit=...) - ПРАВИЛЬНЫЙ метод
-- все отступы исправлены
-- leverage response format
-- leverage cache: init при старте + запись после успешного set
-- get_max_leverage: исправлен шаг 2 (account_positions → account)
-"""
-
 from quart import Quart, request, jsonify
 from quart_cors import cors
 import asyncio
@@ -1469,7 +1457,6 @@ async def calculate_max_size(symbol: str):
         logger.error(f"Calculate size error: {e}", exc_info=True)
         return jsonify({"status": "ERROR", "message": str(e)}), 500
 
-
 # ============================================
 # ENDPOINT: DEBUG POSITION RAW FIELDS
 # ============================================
@@ -1529,19 +1516,6 @@ async def debug_position_raw(symbol: str):
     except Exception as e:
         logger.error(f"Debug position error: {e}", exc_info=True)
         return jsonify({"status": "ERROR", "message": str(e)}), 500
-
-@app.route('/debug/api-methods', methods=['GET'])
-async def debug_api_methods():
-    import lighter
-    result = {}
-    for cls_name in ['OrderApi', 'AccountApi', 'CandlestickApi']:
-        cls = getattr(lighter, cls_name, None)
-        if cls:
-            instance = cls(api_client)
-            result[cls_name] = [m for m in dir(instance)
-                               if not m.startswith('_') and callable(getattr(instance, m))]
-    return jsonify(result)
-
 
 # ============================================
 # RUN

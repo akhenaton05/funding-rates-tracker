@@ -6,19 +6,21 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import ru.client.aster.AsterClient;
 import ru.client.extended.ExtendedClient;
+import ru.client.hyperliquid.HyperliquidClient;
+import ru.client.lighter.LighterClient;
 import ru.dto.exchanges.Direction;
 import ru.dto.exchanges.Position;
 import ru.dto.exchanges.aster.AsterTrade;
-import ru.dto.exchanges.extended.ExtendedMarketStats;
 import ru.dto.exchanges.extended.ExtendedPositionHistory;
+import ru.dto.funding.aster.AsterFundingResponse;
+import ru.dto.funding.hyperliquid.HyperliquidFundingResponse;
+import ru.dto.funding.lighter.LighterFundingResponse;
 import ru.exchanges.Asterdex;
 import ru.exchanges.Extended;
 import ru.exchanges.Hyperliquid;
 import ru.exchanges.Lighter;
 
-import java.time.Instant;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -30,6 +32,8 @@ public class ExchangeTestController {
 
     private final AsterClient asterClient;
     private final ExtendedClient extendedClient;
+    private final LighterClient lighterClient;
+    private final HyperliquidClient hyperliquidClient;
     private final Extended extended;
     private final Asterdex aster;
     private final Lighter lighter;
@@ -48,6 +52,36 @@ public class ExchangeTestController {
         System.out.println(pnl);
 
         return pnl;
+    }
+
+    // GET /test/aster/fundings
+    @GetMapping("/aster/fundings")
+    public List<AsterFundingResponse> getAsterFundingRates() {
+        log.info("Test Aster funding rates");
+
+        return asterClient.getFundingList().stream()
+                .peek(item -> item.setFundingRate(item.getFundingUI()))
+                .toList();
+    }
+
+    // GET /test/aster/fundings
+    @GetMapping("/lighter/fundings")
+    public List<LighterFundingResponse> getLighterFundingRates() {
+        log.info("Test Lighter funding rates");
+
+        return lighterClient.getFundingList().stream()
+                .peek(item -> item.setFundingRate(item.getFundingUI()))
+                .toList();
+    }
+
+    // GET /test/aster/fundings
+    @GetMapping("/hyperliquid/fundings")
+    public List<HyperliquidFundingResponse> getHyperFundingRates() {
+        log.info("Test Lighter funding rates");
+
+        return hyperliquidClient.getFundingList().stream()
+                .peek(item -> item.setFundingRate(item.getFundingUI()))
+                .toList();
     }
 
     // GET /test/extended/position/history?market=4-USD&side=LONG

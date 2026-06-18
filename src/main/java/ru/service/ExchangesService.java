@@ -368,7 +368,7 @@ public class ExchangesService {
                 return orderId;
 
             } catch (Exception e) {
-                log.error("[{}] Opening failed: {}", exchangeOne.getName(), e.getMessage(), e);
+                log.error("[{}] Position opening failed: {}", exchangeOne.getName(), e.getMessage(), e);
                 throw new OpeningPositionException("[" + exchangeOne.getName() + "] " + e.getMessage());
             }
         });
@@ -398,8 +398,8 @@ public class ExchangesService {
                 return orderId;
 
             } catch (Exception e) {
-                log.error("[{}] Opening failed: {}", exchangeTwo.getName(), e.getMessage(), e);
-                throw new OpeningPositionException("[" + exchangeTwo.getName() + "] " + e.getMessage());
+                log.error("[{}] Position opening failed: {}", exchangeTwo.getName(), e.getMessage(), e);
+                throw new OpeningPositionException("[" + exchangeTwo.getName() + "] " + e.getMessage(), e);
             }
         });
 

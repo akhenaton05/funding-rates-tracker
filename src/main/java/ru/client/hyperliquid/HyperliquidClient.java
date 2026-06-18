@@ -4,11 +4,22 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.hc.client5.http.classic.methods.HttpGet;
+import org.apache.hc.client5.http.classic.methods.HttpPost;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
+import org.apache.hc.core5.http.io.entity.EntityUtils;
+import org.apache.hc.core5.http.io.entity.StringEntity;
+import org.apache.hc.core5.net.URIBuilder;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 import ru.dto.exchanges.ExchangeType;
 import ru.dto.exchanges.OrderResult;
 import ru.dto.exchanges.hyperliquid.*;
+import ru.dto.funding.hyperliquid.HyperliquidFundingResponse;
+import ru.dto.funding.lighter.LighterFundingRatesResponse;
+import ru.dto.funding.lighter.LighterFundingResponse;
+import ru.utils.HyperliquidParser;
 
 import java.io.IOException;
 import java.net.URI;
@@ -17,6 +28,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,14 +40,73 @@ import java.util.Map;
 public class HyperliquidClient {
 
     private final ObjectMapper objectMapper;
+    private final CloseableHttpClient httpClient;
     private final HttpClient localHttpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
+    private HyperliquidParser hyperliquidParser = new HyperliquidParser();
     private String baseUrl;
+    private static final String URL = "https://api.hyperliquid.xyz";
 
-    public HyperliquidClient(ObjectMapper objectMapper) {
+    public HyperliquidClient(ObjectMapper objectMapper, CloseableHttpClient httpClient) {
         this.objectMapper = objectMapper;
+        this.httpClient = httpClient;
+    }
+
+    private String executePublicPost(String endpoint, Object body) {
+        try {
+            URI uri = new URIBuilder(URL + endpoint).build();
+
+            HttpPost post = new HttpPost(uri);
+            post.setHeader("Content-Type", "application/json");
+
+            String jsonBody = objectMapper.writeValueAsString(body);
+            post.setEntity(new StringEntity(jsonBody, StandardCharsets.UTF_8));
+
+            log.info("Hyperliquid Public POST {}", uri);
+            log.info("Hyperliquid Public POST body {}", jsonBody);
+
+            try (CloseableHttpResponse resp = httpClient.execute(post)) {
+                int code = resp.getCode();
+                String responseBody = EntityUtils.toString(resp.getEntity(), StandardCharsets.UTF_8);
+
+                if (code == 200) {
+                    return responseBody;
+                }
+
+                log.error("Hyperliquid Public POST error code={}, body={}", code, responseBody);
+                return null;
+            }
+        } catch (Exception e) {
+            log.error("Hyperliquid Public POST error {}", endpoint, e);
+            return null;
+        }
+    }
+
+
+
+    public List<HyperliquidFundingResponse> getFundingList() {
+        try {
+            String response = executePublicPost("/info", Map.of("type", "metaAndAssetCtxs"));
+
+            if (response == null) {
+                return null;
+            }
+
+            if(!response.isEmpty()) {
+                log.info("[LighterController] Got response for funding rates lists");
+            } else {
+                log.info("[LighterController] Response for funding rates lists is empty");
+                return new ArrayList<>();
+            }
+
+            return hyperliquidParser.parseMetaAndAssetCtxs(response);
+
+        } catch (Exception e) {
+            log.error(e.getMessage());
+            return new ArrayList<>();
+        }
     }
 
     /**

@@ -11,6 +11,8 @@ import ru.dto.exchanges.extended.ExtendedOrderBook;
 import ru.dto.exchanges.extended.ExtendedPosition;
 import ru.dto.exchanges.extended.ExtendedPositionHistory;
 import ru.dto.funding.FundingCloseSignal;
+import ru.dto.funding.FundingHistoryDto;
+import ru.dto.funding.aster.AsterFundingHistoryDto;
 import ru.exceptions.ClosingPositionException;
 import ru.mapper.extended.ExtendedOrderBookMapper;
 import ru.mapper.extended.ExtendedPositionMapper;
@@ -321,5 +323,10 @@ public class Extended implements Exchange {
     @Override
     public boolean isFundingTimeValid(String ticker) {
         return true;
+    }
+
+    @Override
+    public List<FundingHistoryDto> getFundingHistoryForSymbol(String symbol, long startTime, long endTime) {
+        return new ArrayList<>();
     }
 }

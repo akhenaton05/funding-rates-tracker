@@ -15,6 +15,7 @@ import ru.dto.exchanges.ExchangeType;
 import ru.dto.exchanges.OrderResult;
 import ru.dto.exchanges.lighter.*;
 import ru.dto.funding.aster.AsterFundingResponse;
+import ru.dto.funding.lighter.LighterFundingHistoryDto;
 import ru.dto.funding.lighter.LighterFundingRatesResponse;
 import ru.dto.funding.lighter.LighterFundingResponse;
 import ru.exceptions.OpeningPositionException;
@@ -138,29 +139,32 @@ public class LighterClient {
         }
     }
 
-    public List<AsterFundingResponse> getFundingLists() {
+    public List<LighterFundingHistoryDto> getFundingHistory(String symbol, long startTime, long endTime) {
         try {
-            String response = executePublicGet("/fapi/v1/premiumIndex", null);
+            String url = baseUrl + "/market/" + symbol + "/funding-history"
+                    + "?startUnix=" + startTime + "&endUnix=" + endTime;
 
-            if (response == null) {
-                return null;
-            }
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(20))
+                    .GET()
+                    .build();
 
-            if(!response.isEmpty()) {
-                log.info("[Aster] Got response for funding rates lists");
-            } else {
-                log.info("[Aster] Response for funding rates lists is empty");
+            HttpResponse<String> response = localHttpClient.send(request,
+                    HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() != 200) {
+                log.error("[Lighter] Error getting response: {}", response.statusCode());
                 return new ArrayList<>();
             }
 
-            List<AsterFundingResponse> fundingsList = objectMapper.readValue(response,
-                    objectMapper.getTypeFactory().constructCollectionType(List.class, AsterFundingResponse.class));
-            log.info("[Aster] got list {}", fundingsList);
+            List<LighterFundingHistoryDto> dto = objectMapper.readValue(response.body(),
+                    objectMapper.getTypeFactory().constructCollectionType(List.class, LighterFundingHistoryDto.class));
+            dto.forEach( obj -> obj.setTime(obj.getTime() * 1000L));// secs - millis normalization
 
-            return fundingsList;
-
+            return dto;
         } catch (Exception e) {
-            log.error(e.getMessage());
+            log.error("[LighterClient] getFundingHistory error for {}", symbol, e);
             return new ArrayList<>();
         }
     }

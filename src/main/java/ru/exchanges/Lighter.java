@@ -9,6 +9,9 @@ import ru.dto.exchanges.*;
 import ru.dto.exchanges.lighter.LighterOrderBookResponse;
 import ru.dto.exchanges.lighter.LighterPosition;
 import ru.dto.funding.FundingCloseSignal;
+import ru.dto.funding.FundingHistoryDto;
+import ru.dto.funding.aster.AsterFundingHistoryDto;
+import ru.dto.funding.lighter.LighterFundingHistoryDto;
 import ru.mapper.lighter.LighterOrderBookMapper;
 import ru.mapper.lighter.LighterPositionMapper;
 
@@ -194,5 +197,13 @@ public class Lighter implements Exchange {
     @Override
     public boolean isFundingTimeValid(String ticker) {
         return true;
+    }
+
+    @Override
+    public List<FundingHistoryDto> getFundingHistoryForSymbol(String symbol, long startTime, long endTime) {
+        startTime = startTime / 1000;
+        endTime = endTime / 1000;
+        List<LighterFundingHistoryDto> history = lighterClient.getFundingHistory(formatSymbol(symbol), startTime, endTime);
+        return new ArrayList<>(history);
     }
 }

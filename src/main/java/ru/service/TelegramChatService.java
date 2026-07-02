@@ -44,8 +44,7 @@ public class TelegramChatService extends TelegramLongPollingBot {
     private final FundingArbitrageService fundingService;
     private final ExchangesService exchangesService;
     private final TradeHistoryService tradeHistoryService;
-    private final ScheduledExecutorService deleteScheduler =
-            Executors.newSingleThreadScheduledExecutor();
+    private final ScheduledExecutorService deleteScheduler = Executors.newSingleThreadScheduledExecutor();
 
     private final Map<String, Integer> positionMessageIds = new ConcurrentHashMap<>();
 
@@ -543,7 +542,8 @@ public class TelegramChatService extends TelegramLongPollingBot {
                 "🤖 *[FundingBot]:* Position `%s` \uD83D\uDDFF\n\n" +
                         "\uD83D\uDCBC *Info:*\n" +
                         "Ticker: %s | Margin: %.2f$ \n" +
-                        "Holdtime: %s | Rate: %.2f→%.2f\n\n" +
+                        "Holdtime: %s | Rate: %.2f→%.2f\n" +
+                        "7d APR: %.2f\n\n" +
                         "\uD83D\uDCCA *Position:*\n" +
                         "*%s:* %s→%s (Liq %s)\n" +
                         "*%s:* %s→%s (Liq %s)\n" +
@@ -555,6 +555,7 @@ public class TelegramChatService extends TelegramLongPollingBot {
                 pnl.getPositionId(),
                 pnl.getTicker(), event.getBalance(),
                 formatDuration(hold), event.getOpenFundingRate(), event.getCurrentFundingRate(),
+                event.getHistoricalFundingRate(),
 
                 ex1,
                 formatPrice(pnl.getFirstSnapshot().getEntryPrice()), formatPrice(pnl.getFirstSnapshot().getMarkPrice()),

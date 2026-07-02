@@ -5,6 +5,8 @@ import lombok.Data;
 import ru.dto.exchanges.Direction;
 import ru.dto.funding.PositionPnLData;
 
+import java.math.BigDecimal;
+
 @Data
 @Builder
 public class PositionUpdateEvent {
@@ -20,4 +22,5 @@ public class PositionUpdateEvent {
     private final double currentFundingRate;
     private final long openedAtMs;
     private final PositionPnLData pnlData;
+    private final BigDecimal historicalFundingRate;
 }

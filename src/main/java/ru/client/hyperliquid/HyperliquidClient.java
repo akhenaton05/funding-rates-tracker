@@ -16,6 +16,8 @@ import org.springframework.stereotype.Component;
 import ru.dto.exchanges.ExchangeType;
 import ru.dto.exchanges.OrderResult;
 import ru.dto.exchanges.hyperliquid.*;
+import ru.dto.funding.aster.AsterFundingHistoryDto;
+import ru.dto.funding.hyperliquid.HyperliquidFundingHistoryDto;
 import ru.dto.funding.hyperliquid.HyperliquidFundingResponse;
 import ru.dto.funding.lighter.LighterFundingRatesResponse;
 import ru.dto.funding.lighter.LighterFundingResponse;
@@ -84,8 +86,6 @@ public class HyperliquidClient {
         }
     }
 
-
-
     public List<HyperliquidFundingResponse> getFundingList() {
         try {
             String response = executePublicPost("/info", Map.of("type", "metaAndAssetCtxs"));
@@ -103,6 +103,37 @@ public class HyperliquidClient {
 
             return hyperliquidParser.parseMetaAndAssetCtxs(response);
 
+        } catch (Exception e) {
+            log.error(e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+
+    public List<HyperliquidFundingHistoryDto> getFundingHistory(String symbol, long startTime, long endTime) {
+        try {
+            Map<String, Object> body = new HashMap<>();
+            body.put("type", "fundingHistory");
+            body.put("coin", symbol);
+            body.put("startTime", startTime);
+            body.put("endTime", endTime);
+
+            String response = executePublicPost("/info", body);
+
+            if (response == null) {
+                return null;
+            }
+
+            if(!response.isEmpty()) {
+                log.info("[LighterController] Got response for funding rates lists");
+            } else {
+                log.info("[LighterController] Response for funding rates lists is empty");
+                return new ArrayList<>();
+            }
+
+            List<HyperliquidFundingHistoryDto> responseDto = objectMapper.readValue(response,
+                    objectMapper.getTypeFactory().constructCollectionType(List.class, HyperliquidFundingHistoryDto.class));
+
+            return responseDto;
         } catch (Exception e) {
             log.error(e.getMessage());
             return new ArrayList<>();

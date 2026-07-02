@@ -6,6 +6,8 @@ import lombok.Data;
 import ru.dto.exchanges.Direction;
 import ru.dto.exchanges.ExchangeType;
 
+import java.math.BigDecimal;
+
 @Data
 @Builder
 @AllArgsConstructor
@@ -18,6 +20,7 @@ public class ArbitrageRates {
     private double secondRate;
     private String action;
     private Integer oiRank;
+    private BigDecimal historicalRate;
 
     //Lower rate → LONG (receive funding)
     //Higher rate → SHORT (pay funding)

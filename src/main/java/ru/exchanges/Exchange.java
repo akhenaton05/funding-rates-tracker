@@ -2,6 +2,7 @@ package ru.exchanges;
 
 import ru.dto.exchanges.*;
 import ru.dto.funding.FundingCloseSignal;
+import ru.dto.funding.FundingHistoryDto;
 import ru.dto.funding.FundingOpenSignal;
 import ru.dto.funding.PositionPnLData;
 
@@ -55,7 +56,7 @@ public interface Exchange {
 
     boolean supportsSlTp();
 
-//    PositionRiskControl validatePositionRisk(String symbol, Direction direction);
-
     boolean isFundingTimeValid(String ticker);
+
+    List<FundingHistoryDto> getFundingHistoryForSymbol(String symbol, long startTime, long endTime);
 }

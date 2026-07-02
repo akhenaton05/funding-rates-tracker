@@ -10,10 +10,14 @@ import ru.dto.exchanges.hyperliquid.ClosedPnlData;
 import ru.dto.exchanges.hyperliquid.HyperliquidOrderBookResponse;
 import ru.dto.exchanges.hyperliquid.HyperliquidPosition;
 import ru.dto.funding.FundingCloseSignal;
+import ru.dto.funding.FundingHistoryDto;
+import ru.dto.funding.aster.AsterFundingHistoryDto;
+import ru.dto.funding.hyperliquid.HyperliquidFundingHistoryDto;
 import ru.exceptions.ClosingPositionException;
 import ru.mapper.hyperliquid.HyperliquidOrderBookMapper;
 import ru.mapper.hyperliquid.HyperliquidPositionMapper;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -236,5 +240,13 @@ public class Hyperliquid implements Exchange {
     @Override
     public boolean isFundingTimeValid(String ticker) {
         return true;
+    }
+
+    @Override
+    public List<FundingHistoryDto> getFundingHistoryForSymbol(String symbol, long startTime, long endTime) {
+        List<HyperliquidFundingHistoryDto> history = hyperliquidClient.getFundingHistory(formatSymbol(symbol), startTime, endTime).stream()
+                .peek(obj -> obj.setFundingRate(obj.getFundingRate().multiply(BigDecimal.valueOf(100))))
+                .toList();
+        return new ArrayList<>(history);
     }
 }

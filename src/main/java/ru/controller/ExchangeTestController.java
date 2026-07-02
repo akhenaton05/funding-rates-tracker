@@ -9,17 +9,24 @@ import ru.client.extended.ExtendedClient;
 import ru.client.hyperliquid.HyperliquidClient;
 import ru.client.lighter.LighterClient;
 import ru.dto.exchanges.Direction;
+import ru.dto.exchanges.ExchangeType;
 import ru.dto.exchanges.Position;
 import ru.dto.exchanges.aster.AsterTrade;
 import ru.dto.exchanges.extended.ExtendedPositionHistory;
+import ru.dto.funding.FundingHistoryDto;
+import ru.dto.funding.aster.AsterFundingHistoryDto;
 import ru.dto.funding.aster.AsterFundingResponse;
+import ru.dto.funding.hyperliquid.HyperliquidFundingHistoryDto;
 import ru.dto.funding.hyperliquid.HyperliquidFundingResponse;
+import ru.dto.funding.lighter.LighterFundingHistoryDto;
 import ru.dto.funding.lighter.LighterFundingResponse;
 import ru.exchanges.Asterdex;
 import ru.exchanges.Extended;
 import ru.exchanges.Hyperliquid;
 import ru.exchanges.Lighter;
+import ru.utils.FundingHistoryParser;
 
+import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +45,7 @@ public class ExchangeTestController {
     private final Asterdex aster;
     private final Lighter lighter;
     private final Hyperliquid hyper;
+    private final FundingHistoryParser fundingHistoryParser;
 
     // GET /test/aster/pnl?symbol=BTCUSDT&orderId=123456789
     @GetMapping("/aster/pnl")
@@ -53,6 +61,69 @@ public class ExchangeTestController {
 
         return pnl;
     }
+
+    // GET /test/funding-history
+    @GetMapping("/funding-history")
+    public Map<ExchangeType, List<FundingHistoryDto>> getFundingRatesHistory(@RequestParam(value = "symbol") String symbol,
+                                                                             @RequestParam(value = "startTime") long startTime) {
+        long endTime = System.currentTimeMillis();
+        return fundingHistoryParser.parseFundingHistory(symbol, startTime, endTime);
+    }
+
+    // GET /test/aster/funding-history
+    @GetMapping("/aster/funding-history")
+    public List<AsterFundingHistoryDto> getAsterFundingRatesHistory(@RequestParam(value = "symbol") String symbol) {
+        log.info("Test Aster funding rates history");
+
+        long endTime   = System.currentTimeMillis();                // сейчас
+        long startTime = endTime - 7L * 24 * 60 * 60 * 1000;
+        List<AsterFundingHistoryDto> dto = asterClient.getFundingHistory(symbol + "USDT", startTime, endTime);
+
+        BigDecimal sum = dto.stream()
+                .map(AsterFundingHistoryDto::getFundingRate)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        log.info("[Controller] Aster funding rate sum {}", sum.multiply(BigDecimal.valueOf(100)));
+
+        return dto;
+    }
+
+    // GET /test/hyper/funding-history
+    @GetMapping("/hyper/funding-history")
+    public List<HyperliquidFundingHistoryDto> getHyperFundingRatesHistory(@RequestParam(value = "symbol") String symbol) {
+        log.info("Test Hyper funding rates history");
+
+        long endTime   = System.currentTimeMillis();                // сейчас
+        long startTime = endTime - 7L * 24 * 60 * 60 * 1000;
+        List<HyperliquidFundingHistoryDto> dto = hyperliquidClient.getFundingHistory(symbol, startTime, endTime);
+
+        BigDecimal sum = dto.stream()
+                .map(HyperliquidFundingHistoryDto::getFundingRate)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        log.info("[Controller] Hyper funding rate sum {}", sum.multiply(BigDecimal.valueOf(100)));
+
+        return dto;
+    }
+
+    // GET /test/hyper/funding-history
+    @GetMapping("/lighter/funding-history")
+    public List<LighterFundingHistoryDto> getLighterFundingRatesHistory(@RequestParam(value = "symbol") String symbol) {
+        log.info("Test Lighter funding rates history");
+
+        long endTime   = System.currentTimeMillis() / 1000;
+        long startTime = endTime - 7L * 24 * 60 * 60;
+        List<LighterFundingHistoryDto> dto = lighterClient.getFundingHistory(symbol, startTime, endTime);
+
+        BigDecimal sum = dto.stream()
+                .map(LighterFundingHistoryDto::getFundingRate)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        log.info("[Controller] Lighter funding rate sum {}", sum);
+
+        return dto;
+    }
+
 
     // GET /test/aster/fundings
     @GetMapping("/aster/fundings")

@@ -6,6 +6,8 @@ import ru.dto.exchanges.Direction;
 import ru.dto.exchanges.ExchangePosition;
 import ru.exchanges.Exchange;
 
+import java.math.BigDecimal;
+
 @Data
 @Builder
 public class FundingCloseSignal {
@@ -25,4 +27,5 @@ public class FundingCloseSignal {
     private long openedAtMs;
     private double openSpread;
     private int emptyPositionStreak;
+    private BigDecimal historicalRate;
 }

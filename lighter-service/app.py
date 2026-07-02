@@ -1517,6 +1517,51 @@ async def debug_position_raw(symbol: str):
         logger.error(f"Debug position error: {e}", exc_info=True)
         return jsonify({"status": "ERROR", "message": str(e)}), 500
 
+@app.route('/market/<symbol>/funding-history', methods=['GET'])
+async def get_funding_history(symbol: str):
+    try:
+        start_unix = request.args.get('startUnix')
+        end_unix = request.args.get('endUnix')
+
+        if not start_unix or not end_unix:
+            return jsonify({"status": "ERROR", "message": "startUnix and endUnix required"}), 400
+
+        metadata = await get_market_metadata(symbol)
+        market_id = metadata['market_id']
+
+        candlestick_api = lighter.CandlestickApi(api_client)
+        response = await asyncio.wait_for(
+            candlestick_api.fundings(
+                market_id=market_id,
+                resolution="1h",
+                start_timestamp=int(start_unix),
+                end_timestamp=int(end_unix),
+                count_back=168
+            ),
+            timeout=10.0
+        )
+
+        fundings = getattr(response, 'fundings', [])
+        result = []
+
+        for f in fundings:
+            rate = float(getattr(f, 'rate', 0) or 0)
+            direction = getattr(f, 'direction', None)
+            signed_rate = -rate if direction == 'short' else rate
+            logger.info(f"rate={rate}, direction={direction}, signed={signed_rate}")
+
+            result.append({
+                "coin": symbol.upper(),   #
+                "unix": int(getattr(f, 'timestamp', 0) or 0),
+                "fundingRate": signed_rate
+            })
+
+        return jsonify(result), 200  #
+
+    except Exception as e:
+        logger.error(f"Funding history error: {e}", exc_info=True)
+        return jsonify({"status": "ERROR", "message": str(e)}), 500
+
 # ============================================
 # RUN
 # ============================================

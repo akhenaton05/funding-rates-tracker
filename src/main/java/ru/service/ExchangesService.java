@@ -18,7 +18,9 @@ import ru.exceptions.OpeningPositionException;
 import ru.exchanges.Exchange;
 import ru.exchanges.factory.ExchangeFactory;
 import ru.repository.TradeRepository;
+import ru.utils.FundingHistoryParser;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -40,6 +42,7 @@ public class ExchangesService {
     private final FundingArbitrageService fundingArbitrageService;
     private final FundingConfig fundingConfig;
     private final TradeRepository tradeRepository;
+    private final FundingHistoryParser fundingHistoryParser;
 
     private final Map<String, FundingCloseSignal> openedPositions = new ConcurrentHashMap<>();
     private final Map<String, PositionBalance> balanceMap = new ConcurrentHashMap<>();
@@ -213,6 +216,13 @@ public class ExchangesService {
                         ? currentRate.getArbitrageRate()
                         : signal.getOpenedFundingRate();
 
+                BigDecimal historicalSpread = signal.getHistoricalRate();
+
+                if (historicalSpread == null) {
+                    historicalSpread = fundingHistoryParser.parseFundingHistoryForExchange(currentRate, signal.getTicker(), 7L, System.currentTimeMillis());
+                    signal.setHistoricalRate(historicalSpread);
+                }
+
                 eventPublisher.publishEvent(PositionUpdateEvent.builder()
                         .positionId(signal.getId())
                         .balance(signal.getBalance())
@@ -226,6 +236,7 @@ public class ExchangesService {
                         .pnlData(pnlData)
                         .firstDirection(signal.getFirstPosition().getDirection())
                         .secondDirection(signal.getSecondPosition().getDirection())
+                        .historicalFundingRate(historicalSpread)
                         .build()
                 );
 
@@ -1485,7 +1496,7 @@ public class ExchangesService {
             ExchangeType ex1 = pos.getFirstExchange().getType();
             ExchangeType ex2 = pos.getSecondExchange().getType();
 
-            return rates.stream()
+            ArbitrageRates result = rates.stream()
                     .filter(r -> r.getSymbol().equals(pos.getTicker()))
                     .filter(r ->
                             (r.getFirstExchange() == ex1 && r.getSecondExchange() == ex2) ||
@@ -1493,6 +1504,12 @@ public class ExchangesService {
                     )
                     .findFirst()
                     .orElse(null);
+
+            if (result != null && !pos.getAction().equalsIgnoreCase(result.getAction())) {
+                result.setArbitrageRate(result.getArbitrageRate() * -1);
+            }
+
+            return result;
         } catch (Exception e) {
             log.error("[FundingBot] Failed to get spread for {}", pos.getTicker(), e);
             return null;

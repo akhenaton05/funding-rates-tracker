@@ -19,6 +19,8 @@ import org.springframework.stereotype.Component;
 import ru.dto.exchanges.ExchangeType;
 import ru.dto.exchanges.OrderResult;
 import ru.dto.exchanges.aster.*;
+import ru.dto.funding.FundingHistoryDto;
+import ru.dto.funding.aster.AsterFundingHistoryDto;
 import ru.dto.funding.aster.AsterFundingResponse;
 import ru.exceptions.aster.AsterApiException;
 import ru.exceptions.aster.AsterIpBanException;
@@ -1171,6 +1173,26 @@ public class AsterClient {
 
         } catch (Exception e) {
             log.error("[Aster] getTradeResult error for symbol={}, orderId={}", symbol, orderId, e);
+            return null;
+        }
+    }
+
+    public List<AsterFundingHistoryDto> getFundingHistory(String symbol, long startTime, long endTime) {
+        try {
+            String queryParams = "symbol=" + symbol + "&startTime=" + startTime + "&endTime=" + endTime + "&limit=" + 168;
+            String response = executePublicGet("/fapi/v1/fundingRate", queryParams);
+
+            if (response == null || response.isEmpty()) {
+                log.info("[Aster] Response for funding rates history is empty");
+                return null;
+            }
+
+            List<AsterFundingHistoryDto> responseDto = objectMapper.readValue(response,
+                    objectMapper.getTypeFactory().constructCollectionType(List.class, AsterFundingHistoryDto.class));
+
+            return responseDto;
+        } catch (Exception e) {
+            log.error("[AsterClient] getFundingList error", e);
             return null;
         }
     }

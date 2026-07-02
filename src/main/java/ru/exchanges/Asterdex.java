@@ -8,12 +8,16 @@ import ru.client.aster.AsterClient;
 import ru.dto.exchanges.*;
 import ru.dto.exchanges.aster.*;
 import ru.dto.funding.FundingCloseSignal;
+import ru.dto.funding.FundingHistoryDto;
+import ru.dto.funding.aster.AsterFundingHistoryDto;
 import ru.exceptions.ClosingPositionException;
 import ru.exceptions.OpeningPositionException;
 import ru.exceptions.aster.AsterApiException;
 import ru.mapper.aster.AsterOrderBookMapper;
 import ru.mapper.aster.AsterPositionMapper;
 
+import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -345,5 +349,13 @@ public class Asterdex implements Exchange {
     public boolean isFundingTimeValid(String ticker) {
         long minutes = getMinutesUntilFunding(ticker);
         return minutes <= 60;
+    }
+
+    @Override
+    public List<FundingHistoryDto> getFundingHistoryForSymbol(String symbol, long startTime, long endTime) {
+        List<AsterFundingHistoryDto> history = asterClient.getFundingHistory(formatSymbol(symbol), startTime, endTime).stream()
+                .peek(obj -> obj.setFundingRate(obj.getFundingRate().multiply(BigDecimal.valueOf(100))))
+                .toList();
+        return new ArrayList<>(history);
     }
 }

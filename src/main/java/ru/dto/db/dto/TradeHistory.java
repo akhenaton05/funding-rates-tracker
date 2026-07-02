@@ -22,8 +22,8 @@ public class TradeHistory {
 
     // P&L
     private double totalPnl;
-    private double pnlToVolumePercent;   // <-- добавить
-    private double avgPnlPerTrade;       // <-- добавить
+    private double pnlToVolumePercent;
+    private double avgPnlPerTrade;
     private double bestTrade;
     private double worstTrade;
 
@@ -31,22 +31,22 @@ public class TradeHistory {
     private int wins;
     private int losses;
     private double winRate;
-    private int currentStreak;           // <-- добавить
+    private int currentStreak;
 
     // Фандинг
-    private double totalFunding;         // <-- добавить
-    private double fundingToPnlPercent;  // <-- добавить
-    private double avgOpenRate;          // <-- добавить
-    private double avgCloseRate;         // <-- добавить
-    private double avgRateDelta;         // <-- добавить
+    private double totalFunding;
+    private double fundingToPnlPercent;
+    private double avgOpenRate;
+    private double avgCloseRate;
+    private double avgRateDelta;
 
     // Удержание
-    private Duration avgHoldTime;        // <-- добавить
-    private Duration maxHoldTime;        // <-- добавить
-    private String   maxHoldTicker;      // <-- добавить
-    private Duration minHoldTime;        // <-- добавить
-    private String   minHoldTicker;      // <-- добавить
+    private Duration avgHoldTime;
+    private Duration maxHoldTime;
+    private String   maxHoldTicker;
+    private Duration minHoldTime;
+    private String   minHoldTicker;
 
     // Тикеры
-    private List<TickerStats> tickerStats; // <-- добавить
+    private List<TickerStats> tickerStats;
 }

@@ -1,5 +1,4 @@
 # Hyperliquid Exchange Service
-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
@@ -14,15 +13,15 @@ load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s %(levelname)-8s %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format="%(asctime)s %(levelname)-8s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app, allow_origins="*")
+CORS(app, resources={r"/*": {"origins": "*"}})  # FIX: allow_origins -> resources (правильный Flask-CORS API)
 
-# ─── Конфигурация ────────────────────────────────────────────────────────────
+# --- Configuration ---
 HL_PRIVATE_KEY = os.getenv("HL_PRIVATE_KEY")
 HL_WALLET      = os.getenv("HL_WALLET_ADDRESS")
 HL_TESTNET     = os.getenv("HL_TESTNET", "false").lower() == "true"
@@ -30,14 +29,14 @@ HL_TESTNET     = os.getenv("HL_TESTNET", "false").lower() == "true"
 from hyperliquid.utils import constants
 BASE_URL = constants.TESTNET_API_URL if HL_TESTNET else constants.MAINNET_API_URL
 
-# ─── Глобальные клиенты ──────────────────────────────────────────────────────
+# --- Global clients ---
 info_client     = None
 exchange_client = None
 wallet_address  = None
 
-market_meta_cache: dict[str, dict] = {}
+market_meta_cache: dict = {}
 
-KNOWN_MAX_LEVERAGE: dict[str, int] = {
+KNOWN_MAX_LEVERAGE: dict = {
     "BTC": 50, "ETH": 50, "SOL": 20, "ARB": 20, "OP": 20,
     "AVAX": 20, "MATIC": 20, "DOGE": 20, "LINK": 20, "UNI": 20,
     "ATOM": 20, "NEAR": 20, "APT": 20, "SUI": 20, "INJ": 20,
@@ -49,26 +48,47 @@ KNOWN_MAX_LEVERAGE: dict[str, int] = {
 }
 SYSTEM_MAX_LEVERAGE = 50
 
-# ─── Инициализация ────────────────────────────────────────────────────────────
+INIT_MAX_RETRIES = 5
+INIT_BACKOFF_BASE_SEC = 2  # 2, 4, 8, 16, 32
+
+
+def _init_info_client_with_retry():
+    from hyperliquid.info import Info
+
+    last_err = None
+    for attempt in range(1, INIT_MAX_RETRIES + 1):
+        try:
+            client = Info(BASE_URL, skip_ws=True)
+            _ = client.meta()  # проверочный вызов
+            return client
+        except Exception as e:
+            last_err = e
+            wait = INIT_BACKOFF_BASE_SEC * (2 ** (attempt - 1))
+            logger.error(
+                f"Info client init attempt {attempt}/{INIT_MAX_RETRIES} failed: {e}. "
+                f"Retrying in {wait}s...",
+                exc_info=True,
+            )
+            time.sleep(wait)
+
+    raise RuntimeError(f"Could not initialize Info client after {INIT_MAX_RETRIES} attempts: {last_err}")
+
+
 def init_clients():
     global info_client, exchange_client, wallet_address
 
-    from hyperliquid.info import Info
     from hyperliquid.exchange import Exchange
 
     logger.info("Initializing Hyperliquid clients...")
     logger.info(f"Base URL: {BASE_URL}")
     logger.info(f"Testnet:  {HL_TESTNET}")
 
-    try:
-        info_client = Info(BASE_URL, skip_ws=True, spot_meta={"tokens": [], "universe": []})
-        logger.info("Info client initialized OK")
-    except Exception as e:
-        logger.error(f"Failed to init Info client: {e}", exc_info=True)
-        raise
+    # FIX: retry вместо единственной попытки, которая роняла процесс
+    info_client = _init_info_client_with_retry()
+    logger.info("Info client initialized OK")
 
     if not HL_PRIVATE_KEY:
-        logger.warning("No HL_PRIVATE_KEY — READ-ONLY mode")
+        logger.warning("No HL_PRIVATE_KEY - READ-ONLY mode")
         wallet_address = HL_WALLET
         return
 
@@ -77,17 +97,15 @@ def init_clients():
         agent_address = agent_wallet.address
         logger.info(f"Agent wallet (signing): {agent_address}")
 
-        # Master адрес для чтения баланса/позиций
-        # Если HL_WALLET_ADDRESS задан — используем его, иначе agent (для обычных аккаунтов)
         wallet_address = HL_WALLET if HL_WALLET else agent_address
         logger.info(f"Master wallet (balance/positions): {wallet_address}")
 
         exchange_client = Exchange(
             agent_wallet,
             BASE_URL,
-            account_address=HL_WALLET if HL_WALLET else None  # agent торгует от имени master
+            account_address=HL_WALLET if HL_WALLET else None,
         )
-        logger.info("Exchange client initialized — TRADING ENABLED")
+        logger.info("Exchange client initialized - TRADING ENABLED")
     except Exception as e:
         logger.error(f"Failed to init Exchange client: {e}", exc_info=True)
         exchange_client = None
@@ -102,11 +120,15 @@ def load_markets():
         loaded = 0
         for i, asset in enumerate(universe):
             name = asset["name"].upper()
+            # FIX: поддержка и старого onlyIsolated, и нового marginMode
+            margin_mode = asset.get("marginMode")
+            only_isolated = asset.get("onlyIsolated", margin_mode == "strictIsolated")
             market_meta_cache[name] = {
                 "assetIndex":   i,
                 "szDecimals":   asset.get("szDecimals", 4),
                 "maxLeverage":  asset.get("maxLeverage", KNOWN_MAX_LEVERAGE.get(name, 20)),
-                "onlyIsolated": asset.get("onlyIsolated", False),
+                "onlyIsolated": only_isolated,
+                "isDelisted":   asset.get("isDelisted", False),  # FIX: новое поле API
             }
             loaded += 1
         logger.info(f"Loaded {loaded} Hyperliquid markets")
@@ -156,15 +178,14 @@ def round_price(price: float, px_decimals: int) -> float:
     return float(Decimal(str(price)).quantize(q, rounding=ROUND_DOWN))
 
 
-# ─── Endpoints ───────────────────────────────────────────────────────────────
+# --- Endpoints ---
 
 @app.route("/", methods=["GET"])
 def health_check():
-    """Healthcheck — проверяет подключение к HL API."""
     hl_reachable = False
     hl_error     = None
     try:
-        meta = info_client.meta_and_asset_ctxs()
+        meta = info_client.meta_and_asset_ctxs() if info_client else None
         hl_reachable = meta is not None
     except Exception as e:
         hl_error = str(e)
@@ -174,6 +195,7 @@ def health_check():
         service="hyperliquid-service",
         timestamp=datetime.utcnow().isoformat(),
         trading_enabled=exchange_client is not None,
+        info_client_ready=info_client is not None,  # FIX: явно показываем статус info-клиента
         wallet=wallet_address,
         markets_loaded=len(market_meta_cache),
         testnet=HL_TESTNET,
@@ -182,19 +204,13 @@ def health_check():
         hl_api_error=hl_error,
     )
 
+
 @app.route("/positions/last-closed", methods=["GET"])
 def get_last_closed_position():
-    """
-    Найти закрытую позицию по времени закрытия.
-    Params:
-        market      - символ (ETH, BTC...)
-        closed_at_ms - unix ms когда была закрыта позиция
-        window_ms   - окно поиска в мс вокруг closed_at_ms (дефолт 10 сек)
-    """
     try:
         market       = request.args.get("market")
         closed_at_ms = int(request.args.get("closed_at_ms", int(time.time() * 1000)))
-        window_ms    = int(request.args.get("window_ms", 10_000))  # ±10 сек по дефолту
+        window_ms    = int(request.args.get("window_ms", 10_000))
 
         since_ms  = closed_at_ms - window_ms
         until_ms  = closed_at_ms + window_ms
@@ -211,9 +227,9 @@ def get_last_closed_position():
             if market and coin != market.upper():
                 continue
             if closed_pnl == 0.0:
-                continue  # открывающий fill
+                continue
             if fill_time > until_ms:
-                continue  # за пределами окна
+                continue
 
             closing_fills.append(f)
 
@@ -221,7 +237,6 @@ def get_last_closed_position():
             return jsonify(status="OK", data=None,
                            message=f"No closing fills for {market} near {closed_at_ms}"), 200
 
-        # Ближайший к closed_at_ms
         last = min(closing_fills, key=lambda x: abs(int(x.get("time", 0)) - closed_at_ms))
 
         close_side = "SELL" if last.get("side") == "A" else "BUY"
@@ -260,6 +275,7 @@ def get_markets():
             "maxLeverage": meta["maxLeverage"],
         }
         for sym, meta in sorted(market_meta_cache.items(), key=lambda x: x[1]["assetIndex"])
+        if not meta.get("isDelisted")  # FIX: скрываем делистингованные активы
     ]
     return jsonify(status="OK", count=len(markets), data=markets)
 
@@ -271,6 +287,19 @@ def reload_markets():
     return jsonify(status="OK", message=f"Reloaded {loaded} markets", count=len(market_meta_cache))
 
 
+# FIX: новый эндпоинт - Java-бот может проверить готовность перед сигналом на открытие,
+# чтобы не открывать ногу на Aster, если Hyperliquid не может торговать
+@app.route("/status/ready", methods=["GET"])
+def trading_ready():
+    ready = info_client is not None and exchange_client is not None
+    return jsonify(
+        status="OK",
+        ready=ready,
+        info_client_ready=info_client is not None,
+        trading_enabled=exchange_client is not None,
+    ), (200 if ready else 503)
+
+
 @app.route("/balance", methods=["GET"])
 def get_balance():
     try:
@@ -279,7 +308,6 @@ def get_balance():
 
         logger.info(f"Getting balance for wallet: {wallet_address}")
 
-        # Для Unified Account — читаем spot баланс
         spot_state = info_client.spot_user_state(wallet_address)
         logger.info(f"spot_user_state: {spot_state}")
 
@@ -290,14 +318,12 @@ def get_balance():
                 usdc_balance = float(b.get("total", 0) or 0)
                 break
 
-        # Perp state для margin info (может быть пустым у unified)
         perp_state    = info_client.user_state(wallet_address)
         summary       = perp_state.get("crossMarginSummary") or perp_state.get("marginSummary") or {}
         perp_value    = float(summary.get("accountValue", 0) or 0)
         margin_used   = float(summary.get("totalMarginUsed", 0) or 0)
         withdrawable  = float(perp_state.get("withdrawable", 0) or 0)
 
-        # Unified: total = spot USDC + perp value
         total     = usdc_balance if perp_value == 0 else perp_value
         available = withdrawable if withdrawable > 0 else max(0.0, total - margin_used)
 
@@ -330,7 +356,6 @@ def get_positions():
         state         = info_client.user_state(wallet_address)
         raw_positions = state.get("assetPositions", [])
 
-        # Для mark price берём asset_ctxs один раз
         try:
             _, ctxs = info_client.meta_and_asset_ctxs()
         except Exception:
@@ -360,11 +385,9 @@ def get_positions():
             leverage_val = pos.get("leverage", {})
             lev_val   = leverage_val.get("value", 1) if isinstance(leverage_val, dict) else 1
 
-            # funding
             cum_funding      = pos.get("cumFunding", {})
             funding_since_open = float(cum_funding.get("sinceOpen", 0) or 0)
 
-            # mark price из ctxs
             mark_px = entry_px
             if coin in market_meta_cache:
                 idx = market_meta_cache[coin]["assetIndex"]
@@ -410,7 +433,8 @@ def get_orderbook(symbol: str):
         spread     = best_ask - best_bid if best_bid and best_ask else None
         spread_bps = spread / best_bid * 10000 if spread and best_bid else None
 
-        logger.info(f"Orderbook {symbol}: bid={best_bid}, ask={best_ask}, spread_bps={f'{spread_bps:.1f}' if spread_bps else 'N/A'}")
+        spread_bps_str = f"{spread_bps:.1f}" if spread_bps else "N/A"
+        logger.info(f"Orderbook {symbol}: bid={best_bid}, ask={best_ask}, spread_bps={spread_bps_str}")
         return jsonify(
             status="OK",
             market=symbol.upper(),
@@ -661,7 +685,6 @@ def close_position():
 
         logger.info(f"Closing {current_side} {size_round} {symbol}, entry={entry_px:.4f}")
 
-        # ✅ FIX: helper — проверяем фактический размер позиции
         def _current_position_size():
             try:
                 st = info_client.user_state(wallet_address)
@@ -674,7 +697,6 @@ def close_position():
                 logger.warning(f"_current_position_size error: {ex}")
                 return -1.0
 
-        # ✅ FIX: confirm-loop (poll 0.5s × 15s) вместо single sleep(2)
         def _wait_closed(timeout=15.0, poll=0.5):
             elapsed = 0.0
             last = size_round
@@ -699,7 +721,6 @@ def close_position():
             if remaining <= 0:
                 break
 
-            # Попытка close
             try:
                 result = exchange_client.market_close(symbol, remaining, None, slippage)
                 last_result = result
@@ -711,7 +732,6 @@ def close_position():
             status_val = result.get("status", "")
             if status_val != "ok":
                 logger.warning(f"   [a{attempt}] market_close status={status_val}, result={result}")
-                # Может позиция уже закрыта
                 cur = _current_position_size()
                 if cur == 0:
                     logger.info(f"   [a{attempt}] Position already closed")
@@ -722,7 +742,6 @@ def close_position():
                 time.sleep(0.5)
                 continue
 
-            # status == ok
             try:
                 filled = result["response"]["data"]["statuses"][0].get("filled", {})
                 exit_price = float(filled.get("avgPx", 0) or 0)
@@ -755,7 +774,6 @@ def close_position():
             logger.warning(f"   [a{attempt}] still open: {last_size}, will retry")
             remaining = round_size(last_size, sz_dec) if last_size > 0 else remaining
 
-        # Финальная проверка
         final = _current_position_size()
         if final == 0:
             logger.info(f"Position {symbol} confirmed CLOSED (final check)")
@@ -771,7 +789,6 @@ def close_position():
                 raw=last_result,
             ), 200
 
-        # Частичное или неудачное закрытие
         logger.error(f"Position {symbol} not fully closed after {max_attempts} attempts. Remaining: {final}")
         return jsonify(
             status="PARTIAL" if any_order_id else "submitted",
@@ -787,6 +804,7 @@ def close_position():
     except Exception as e:
         logger.error(f"Close position error: {e}", exc_info=True)
         return jsonify(status="ERROR", message=str(e)), 500
+
 
 @app.route("/user/leverage", methods=["POST"])
 def set_leverage():
@@ -831,7 +849,7 @@ def set_leverage():
         return jsonify(status="ERROR", message=str(e)), 500
 
 
-# ─── Запуск ──────────────────────────────────────────────────────────────────
+# --- Startup ---
 if __name__ == "__main__":
     init_clients()
     if info_client:

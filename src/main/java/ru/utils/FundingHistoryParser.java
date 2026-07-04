@@ -34,7 +34,7 @@ public class FundingHistoryParser {
     public void initialiseExchanges() {
         this.exchanges = List.of(
                 exchangeFactory.getExchange(ExchangeType.ASTER),
-                exchangeFactory.getExchange(ExchangeType.HYPERLIQUID),
+                //exchangeFactory.getExchange(ExchangeType.HYPERLIQUID),
                 exchangeFactory.getExchange(ExchangeType.LIGHTER)
         );
     }
@@ -46,8 +46,6 @@ public class FundingHistoryParser {
         Map<ExchangeType, List<FundingHistoryDto>> fundingHistoryMap = exchanges.stream()
                 .filter(e -> e.getType().equals(rates.getFirstExchange()) || e.getType().equals(rates.getSecondExchange()))
                 .collect(Collectors.toMap(Exchange::getType, v -> v.getFundingHistoryForSymbol(symbol, finalStartTime, endTime)));
-
-        //log.info("[FundingHistoryMap] Parsed values:{}", fundingHistoryMap);
 
         return calculateExchangePair(symbol, fundingHistoryMap, rates);
     }
@@ -63,14 +61,6 @@ public class FundingHistoryParser {
             sums.put(exchange, sum);
         });
 
-//        log.info("[FundingHistoryParser] Rate sum for {}: {}={}, {}={}",
-//                symbol,
-//                sums.,
-//                sums.get(ex1),
-//                sums.get(ExchangeType.LIGHTER),
-//                sums.get(ExchangeType.HYPERLIQUID)
-//        );
-
         Map.Entry<ExchangeType, BigDecimal> minEntry = sums.entrySet().stream()
                 .min(Map.Entry.comparingByValue()).orElseThrow();
 
@@ -81,6 +71,8 @@ public class FundingHistoryParser {
 
         ExchangeType shortCalculated = maxEntry.getKey();
         ExchangeType shortCurrent = rates.getFirstDirection().equals(Direction.SHORT) ? rates.getFirstExchange() : rates.getSecondExchange();
+
+        log.info("[FundingHistoryParser] Short calculated: {}; Actual {}", shortCalculated, shortCurrent);
 
         boolean directionMatches = shortCalculated.equals(shortCurrent);
         BigDecimal signedSpread = directionMatches ? spread : spread.negate();

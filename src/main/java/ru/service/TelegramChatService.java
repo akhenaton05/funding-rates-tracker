@@ -543,7 +543,7 @@ public class TelegramChatService extends TelegramLongPollingBot {
                         "\uD83D\uDCBC *Info:*\n" +
                         "Ticker: %s | Margin: %.2f$ \n" +
                         "Holdtime: %s | Rate: %.2f→%.2f\n" +
-                        "7d APR: %.2f\n\n" +
+                        "7d APR: %.2f%%\n\n" +
                         "\uD83D\uDCCA *Position:*\n" +
                         "*%s:* %s→%s (Liq %s)\n" +
                         "*%s:* %s→%s (Liq %s)\n" +

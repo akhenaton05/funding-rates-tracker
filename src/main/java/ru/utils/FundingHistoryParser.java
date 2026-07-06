@@ -34,7 +34,7 @@ public class FundingHistoryParser {
     public void initialiseExchanges() {
         this.exchanges = List.of(
                 exchangeFactory.getExchange(ExchangeType.ASTER),
-                //exchangeFactory.getExchange(ExchangeType.HYPERLIQUID),
+                exchangeFactory.getExchange(ExchangeType.HYPERLIQUID),
                 exchangeFactory.getExchange(ExchangeType.LIGHTER)
         );
     }
@@ -42,6 +42,7 @@ public class FundingHistoryParser {
     public BigDecimal parseFundingHistoryForExchange(ArbitrageRates rates, String symbol, long startTime, long endTime) {
         startTime = endTime - startTime * 24 * 60 * 60 * 1000L; //Days from signature to millis
         long finalStartTime = startTime;
+        log.info("[FundingHistoryParser] StartTime - {}, EndTime - {}", finalStartTime, endTime);
 
         Map<ExchangeType, List<FundingHistoryDto>> fundingHistoryMap = exchanges.stream()
                 .filter(e -> e.getType().equals(rates.getFirstExchange()) || e.getType().equals(rates.getSecondExchange()))
@@ -60,6 +61,8 @@ public class FundingHistoryParser {
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
             sums.put(exchange, sum);
         });
+
+        log.info("[FundingHistoryParser] FilteredMap: {}", sums);
 
         Map.Entry<ExchangeType, BigDecimal> minEntry = sums.entrySet().stream()
                 .min(Map.Entry.comparingByValue()).orElseThrow();
